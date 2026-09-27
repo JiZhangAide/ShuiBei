@@ -264,11 +264,9 @@ def _clean_button_text(text: str, icon_id: str = "") -> str:
 def button(text: str, data: str, *, selected: bool = False, icon_custom_emoji_id: str = "", style: str = "") -> dict:
     icon = re.sub(r"\D", "", str(icon_custom_emoji_id or ""))
     out = {"text": _clean_button_text(text, icon), "callback_data": str(data)}
-    # 与主机器人按钮语义一致：显式 danger/success/primary 优先；导航选中态默认绿色。
-    style_norm = str(style or "").strip().lower()
-    if style_norm in {"primary", "success", "danger"}:
-        out["style"] = style_norm
-    elif selected:
+    # 水杯保持轻量：普通按钮始终无色，只有当前选中/开启状态使用绿色。
+    # 保留 style 参数仅用于兼容旧调用点，不再让业务页面自行染色。
+    if selected:
         out["style"] = "success"
     if icon:
         out["icon_custom_emoji_id"] = icon
@@ -631,11 +629,9 @@ def _v21_quick_text(owner_id: int) -> str:
     lines = [
         _ui_title("messages", "快捷消息", "⚡"),
         "",
-        _ui_field("当前已设置", f"{len(rows)} 条"),
-        "",
-        "用法：你在任意 Business 私聊发送触发关键词，机器人会自动把对应模板发送给当前聊天。",
-        "例如关键词 <code>u</code>，模板填写 USDT 地址。",
-        "限制：最多 20 个触发关键词，单个关键词最多 80 字，回复模板最多 3000 字。",
+        _ui_field("已设置", f"{len(rows)} 条"),
+        "Business 私聊发送关键词 → 自动发送模板。",
+        "最多 20 个关键词 · 单个 80 字 · 模板 3000 字。",
     ]
     if rows:
         lines.extend(["", "<b>当前列表</b>"])
@@ -690,11 +686,9 @@ def _v21_offline_text(owner_id: int) -> str:
     return "\n".join([
         _ui_title("messages", "离线消息", "📴"), "",
         _ui_field("状态", _ui_state(enabled), trusted=True),
-        _ui_field("同一用户触发间隔", f"{max(1, int(st.get('interval_seconds') or 3600)//60)} 分钟"),
-        _ui_field("客服在线时", "不触发回复" if skip_online else "仍然触发回复"),
-        "", "触发规则：客户向你的 Business 托管聊天发送消息时触发；默认关闭。",
-        "在线策略：水杯会根据托管账号最近的主动 Business 发言判断在线状态。",
-        "", "<b>当前模板：</b>", f"<pre>{html.escape(str(st.get('template_text') or ''))}</pre>",
+        _ui_field("触发间隔", f"{max(1, int(st.get('interval_seconds') or 3600)//60)} 分钟"),
+        _ui_field("在线时", "不回复" if skip_online else "仍回复"),
+        "", "<b>当前模板</b>", f"<pre>{html.escape(str(st.get('template_text') or ''))}</pre>",
     ])
 
 
@@ -835,7 +829,7 @@ def _private_command(api: TelegramAPI, message: dict) -> bool:
             seen = False
         try:
             if not seen:
-                markup = {"inline_keyboard": [[button("收到", "onboarding:ack", selected=True, icon_custom_emoji_id=premium_icon("confirm"))]]}
+                markup = {"inline_keyboard": [[button("收到", "onboarding:ack", icon_custom_emoji_id=premium_icon("confirm"))]]}
                 api.send_message(chat_id, _v21_welcome_text(), reply_markup=markup)
             else:
                 api.send_message(chat_id, _r29_home_text(owner_id), reply_markup=main_keyboard(owner_id, "home"))
@@ -1045,7 +1039,7 @@ def settings_category_keyboard(owner_id:int,cat:str):
     elif cat=="security":
         a=bool(int(st.get("scam_detect_enabled",1) or 0)); b=bool(int(st.get("fakebot_detect_enabled",1) or 0)); c=_protection_enabled(owner_id); rows=[[button(("关闭" if a else "开启")+" 反诈风险提醒","setv2:toggle:scam_detect_enabled:security",selected=a,icon_custom_emoji_id=premium_icon("risk"))],[button(("关闭" if b else "开启")+" FakeBot 高仿提醒","setv2:toggle:fakebot_detect_enabled:security",selected=b,icon_custom_emoji_id=premium_icon("fakebot"))],[button(("关闭" if c else "开启")+" 防撤回 / 防编辑","setv2:toggle:protection:security",selected=c,icon_custom_emoji_id=premium_icon("protection"))],[button("反诈查询","menu:antifraud",icon_custom_emoji_id=premium_icon("risk"),style="primary")]]
     elif cat=="ledger":
-        on=bool(int(st.get("item_ledger_enabled") or 0)); unit=str(st.get("ledger_currency") or "USDT").upper(); rows=[[button(f"默认币种：{unit}","settings:currency",selected=True,icon_custom_emoji_id=premium_icon("finance"))],[button(("关闭" if on else "开启")+" 指定消费账本","setv2:toggle:item_ledger_enabled:ledger",selected=on,icon_custom_emoji_id=premium_icon("ledger"))],[button("查询账本","menu:ledger",icon_custom_emoji_id=premium_icon("ledger"),style="primary")],[button("账单 / 总账","menu:bill",icon_custom_emoji_id=premium_icon("finance"),style="primary")],[button("实时汇率","tool:rate",icon_custom_emoji_id=premium_icon("rate"),style="primary")]]
+        on=bool(int(st.get("item_ledger_enabled") or 0)); unit=str(st.get("ledger_currency") or "USDT").upper(); rows=[[button(f"默认币种：{unit}","settings:currency",icon_custom_emoji_id=premium_icon("finance"))],[button(("关闭" if on else "开启")+" 指定消费账本","setv2:toggle:item_ledger_enabled:ledger",selected=on,icon_custom_emoji_id=premium_icon("ledger"))],[button("查询账本","menu:ledger",icon_custom_emoji_id=premium_icon("ledger"),style="primary")],[button("账单 / 总账","menu:bill",icon_custom_emoji_id=premium_icon("finance"),style="primary")],[button("实时汇率","tool:rate",icon_custom_emoji_id=premium_icon("rate"),style="primary")]]
     rows.append([button("返回设置中心","menu:settings",icon_custom_emoji_id=premium_icon("back"),style="primary")]); return {"inline_keyboard":rows}
 
 
@@ -1345,7 +1339,7 @@ def _callback(api: TelegramAPI, cq: dict) -> None:
         if not sync_enabled(owner_id):
             edit(sync_menu_text(owner_id), sync_keyboard(owner_id)); return
         _head = premium_notice_banner("unknown", "确认同步个人账本")
-        edit("\n".join([_head, "", _ui_field("同步范围", "仅同步个人账本"), "", "确认后同步一次。", _head]), {"inline_keyboard": [[button("确认同步一次", "sync:run", selected=True, icon_custom_emoji_id=premium_icon("sync"))], [button("取消", "menu:sync", icon_custom_emoji_id=premium_icon("back"))]]}); return
+        edit("\n".join([_head, "", _ui_field("同步范围", "仅同步个人账本"), "", "确认后同步一次。", _head]), {"inline_keyboard": [[button("确认同步一次", "sync:run", icon_custom_emoji_id=premium_icon("sync"))], [button("取消", "menu:sync", icon_custom_emoji_id=premium_icon("back"))]]}); return
     if data == "sync:run":
         try:
             result = sync_once(owner_id)
@@ -1681,8 +1675,6 @@ def _r29_home_text(owner_id: int) -> str:
         _ui_field("待收", f"{_r29_money(owner_id, int(sm.get('debt_amount_micro') or 0))} · {int(sm.get('debt_count') or 0)} 位"),
         _ui_field("预付款", f"{_r29_money(owner_id, int(sm.get('prepay_amount_micro') or 0))} · {int(sm.get('prepay_count') or 0)} 位"),
         _ui_field("客户", f"{int(sm.get('customer_count') or 0)} 位 · 近 7 天活跃 {int(sm.get('recent_count') or 0)} 位"),
-        "",
-        "客户往来点「客户」，记账与报表点「财务」。",
     ])
 
 
@@ -1760,16 +1752,16 @@ def section_text(section: str, owner_id: int = 0) -> str:
     if section == "finance":
         return "\n".join([
             _ui_title("finance", "财务", "💰"), "",
-            _ui_field("账务", "记账、账单、日 / 周 / 月报"),
-            _ui_field("同步", "按需同步个人账本"),
-            _ui_field("工具", "汇率、计算器、链上查询"),
+            _ui_field("记账", "入账、出账、清账、撤销"),
+            _ui_field("账单", "欠款、预付款、总账"),
+            _ui_field("工具", "同步、汇率、计算器、链上查询"),
         ])
     if section == "msg":
         return "\n".join([
             _ui_title("messages", "消息", "💬"), "",
-            _ui_field("自动回复", "欢迎消息、关键词、离线消息"),
-            _ui_field("快捷消息", "在 Business 会话快速发送模板"),
-            _ui_field("消息保护", "防撤回 / 防编辑提醒"),
+            _ui_field("自动回复", "欢迎、关键词、离线消息"),
+            _ui_field("快捷消息", "Business 会话模板"),
+            _ui_field("保护", "防撤回 / 防编辑"),
         ])
     return _r29_home_text(int(owner_id))
 
