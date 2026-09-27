@@ -199,20 +199,16 @@ def onboarding_mark_seen(owner_id: int) -> None:
 
 
 def welcome_text() -> str:
+    """首屏只介绍水杯最常用的能力；保持短、轻、可扫读。"""
     return (
-        f"{system_icon('messages','👋🏻')} 您好，我是<b>水杯记账</b>，很高兴认识您！\n\n"
-        "━━━━━━━━━━━━━━━\n\n"
-        "<b>水杯记账是墨清记账的精简版本。</b>\n"
-        "如果您追求极致简约，可以一直使用本机器人；如果您希望体验更多功能和可玩性，推荐使用 "
-        "<a href=\"https://t.me/JiZhangAide_bot\">墨清记账 @JiZhangAide_bot</a>。\n\n"
-        "<b>使用水杯记账，您将获得以下能力：</b>\n\n"
-        f" {system_icon('risk','🛡️')} 墨清反诈检测：直接发送 Telegram 用户名或数字 ID 即可查询诈骗记录\n\n"
-        f" {system_icon('protection','🕘')} Business 文本防编辑 / 防撤回：会员功能，消息文本加密并仅短期缓存\n\n"
-        f" {system_icon('ledger','📒')} 您能想到的高频记账能力：入账、出账、清账、撤销、总账、指定消费与导出\n\n"
-        f" {system_icon('messages','💬')} 快捷消息 / 离线消息：减少重复客服操作\n\n"
-        f" {system_icon('tools','🧰')} 计算器 / 实时汇率 / 常用链上查询\n\n"
-        "━━━━━━━━━━━━━━━\n\n"
-        "水杯只保留高频能力，常用功能的使用方式与墨清记账保持一致。"
+        f"{system_icon('welcome','🙂')} <b>水杯记账</b>\n"
+        "墨清记账的轻量版，只留下常用能力。\n\n"
+        f"{system_icon('risk','🛡️')} <b>反诈</b> · 发送用户名或数字 ID\n"
+        f"{system_icon('ledger','📒')} <b>记账</b> · <code>+100</code> / <code>-20 午饭</code>\n"
+        f"{system_icon('protection','🕘')} <b>Business 消息保护</b> · 防编辑 / 防撤回\n"
+        f"{system_icon('messages','💬')} <b>消息</b> · 快捷回复 / 离线消息\n"
+        f"{system_icon('tools','🧰')} <b>工具</b> · 计算器 / 汇率 / 链上查询\n\n"
+        "需要更多功能：<a href=\"https://t.me/JiZhangAide_bot\">墨清记账 @JiZhangAide_bot</a>"
     )
 
 

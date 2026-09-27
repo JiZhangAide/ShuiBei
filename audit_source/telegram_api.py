@@ -80,16 +80,20 @@ def _call_with_emoji_fallback(api, method: str, payload: dict):
                 return None
             changed = False
             raw_text = str(current.get("text") or "")
-            if "<tg-emoji" in raw_text and _is_text_custom_emoji_compat_error(exc):
+            markup = current.get("reply_markup")
+            fallback_markup = _downgrade_reply_markup(markup)
+
+            # 按钮 icon_custom_emoji_id/style 与正文 <tg-emoji> 会共享
+            # "custom emoji / can't use" 这类错误文案。优先只降级按钮并重试，
+            # 避免“按钮不兼容”把本来可用的正文 Premium Emoji 一起剥掉。
+            if markup and fallback_markup != markup and _is_button_compat_error(exc):
+                current["reply_markup"] = fallback_markup
+                changed = True
+            elif "<tg-emoji" in raw_text and _is_text_custom_emoji_compat_error(exc):
                 plain = _downgrade_custom_emoji_html(raw_text)
                 if plain != raw_text:
                     current["text"] = plain
                     changed = True
-            markup = current.get("reply_markup")
-            fallback_markup = _downgrade_reply_markup(markup)
-            if markup and fallback_markup != markup and _is_button_compat_error(exc):
-                current["reply_markup"] = fallback_markup
-                changed = True
             if not changed:
                 raise
     return api.call(method, current)
