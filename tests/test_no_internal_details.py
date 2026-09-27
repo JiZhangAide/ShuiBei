@@ -7,6 +7,7 @@ FORBIDDEN_TEXT = (
     "/" + "www" + "/",
     "/" + "etc" + "/",
     "127" + "." + "0" + "." + "0" + "." + "1",
+    "0" + "." + "0" + "." + "0" + "." + "0",
     "local" + "host",
     "/" + "api" + "/" + "v1" + "/",
     "api" + "." + "jizhang" + "." + "org",
@@ -26,9 +27,27 @@ BOT_TOKEN_RE = re.compile(r"\b\d{8,12}:[A-Za-z0-9_-]{25,}\b")
 # do not match because this pattern requires a quoted string literal.
 SECRET_LITERAL_RE = re.compile(
     r"""(?ix)
-    \b(?:api[_-]?key|token|secret|password|private[_-]?key)\b
+    \b(?:api[_-]?key|api[_-]?hash|token|secret|password|private[_-]?key|session)\b
     \s*=\s*
     ["'][^"'\n]{12,}["']
+    """
+)
+
+TELEGRAM_API_ID_LITERAL_RE = re.compile(
+    r"""(?ix)
+    \b(?:api[_-]?id|telegram[_-]?api[_-]?id)\b
+    \s*=\s*
+    \d{5,}
+    """
+)
+
+ABSOLUTE_DEPLOYMENT_PATH_RE = re.compile(
+    r"""(?ix)
+    (?<![A-Za-z0-9])
+    /
+    (?:root|home|srv|opt|var/www|usr/local)
+    /
+    [^\s"'<>]+
     """
 )
 
@@ -50,11 +69,14 @@ def _text_files():
 def test_public_tree_has_no_internal_paths_or_real_routes():
     for path in _text_files():
         text = path.read_text(encoding="utf-8", errors="ignore")
+        rel = path.relative_to(ROOT)
         for needle in FORBIDDEN_TEXT:
-            assert needle not in text, f"{needle!r} leaked in {path.relative_to(ROOT)}"
-        assert not BOT_TOKEN_RE.search(text), f"bot token leaked in {path.relative_to(ROOT)}"
-        assert not SECRET_LITERAL_RE.search(text), f"literal credential leaked in {path.relative_to(ROOT)}"
-        assert not PRIVATE_IPV4_RE.search(text), f"private network address leaked in {path.relative_to(ROOT)}"
+            assert needle not in text, f"{needle!r} leaked in {rel}"
+        assert not BOT_TOKEN_RE.search(text), f"bot token leaked in {rel}"
+        assert not SECRET_LITERAL_RE.search(text), f"literal credential leaked in {rel}"
+        assert not TELEGRAM_API_ID_LITERAL_RE.search(text), f"Telegram API id leaked in {rel}"
+        assert not ABSOLUTE_DEPLOYMENT_PATH_RE.search(text), f"absolute deployment path leaked in {rel}"
+        assert not PRIVATE_IPV4_RE.search(text), f"private network address leaked in {rel}"
 
 
 def test_public_tree_has_no_runtime_data_files():
@@ -62,5 +84,6 @@ def test_public_tree_has_no_runtime_data_files():
         if not path.is_file() or ".git" in path.parts:
             continue
         name = path.name.lower()
-        assert not name.endswith(FORBIDDEN_RUNTIME_SUFFIXES), f"runtime data file committed: {path.relative_to(ROOT)}"
-        assert not name.endswith(("-wal", "-shm", "-journal")), f"SQLite sidecar committed: {path.relative_to(ROOT)}"
+        rel = path.relative_to(ROOT)
+        assert not name.endswith(FORBIDDEN_RUNTIME_SUFFIXES), f"runtime data file committed: {rel}"
+        assert not name.endswith(("-wal", "-shm", "-journal")), f"SQLite sidecar committed: {rel}"

@@ -1508,8 +1508,8 @@ def process_update(api: TelegramAPI, upd: dict) -> None:
         _private_command(api, upd["message"]); return
 
 
-def run(entitlement_provider=None) -> None:
-    require_moqing_runtime(entitlement_provider)
+def run() -> None:
+    require_moqing_runtime()
     _runtime_clear_ready()
     _runtime_status("initializing_databases", detail="starting local schema checks")
     try:
