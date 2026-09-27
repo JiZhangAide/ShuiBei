@@ -26,4 +26,4 @@ jobs:
       - name: Compile public source
         run: python -m compileall -q audit_source tests
       - name: Run audit tests
-        run: pytest -q
+        run: python -m pytest -q
