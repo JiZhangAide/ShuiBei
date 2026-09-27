@@ -45,6 +45,7 @@ def _is_button_compat_error(exc: Exception) -> bool:
     return any(k in text for k in (
         "button", "inline keyboard", "reply markup", "custom emoji",
         "icon_custom_emoji", "style", "can't use", "cannot use",
+        "document_invalid", "document invalid",
     ))
 
 
@@ -59,7 +60,7 @@ def _is_text_custom_emoji_compat_error(exc: Exception) -> bool:
     return any(k in text for k in (
         "custom emoji", "custom_emoji", "tg-emoji",
         "unsupported start tag", "can't parse entities", "cannot parse entities",
-        "can't use", "cannot use",
+        "can't use", "cannot use", "document_invalid", "document invalid",
     ))
 
 

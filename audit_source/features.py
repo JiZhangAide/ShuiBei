@@ -99,6 +99,58 @@ def ensure_feature_schema() -> None:
                 payload_json TEXT NOT NULL DEFAULT '{}',
                 updated_at INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS merchant_customers (
+                owner_id INTEGER NOT NULL,
+                peer_id INTEGER NOT NULL,
+                connection_id TEXT NOT NULL DEFAULT '',
+                peer_name TEXT NOT NULL DEFAULT '',
+                peer_username TEXT NOT NULL DEFAULT '',
+                first_seen_at INTEGER NOT NULL DEFAULT 0,
+                last_seen_at INTEGER NOT NULL DEFAULT 0,
+                last_incoming_at INTEGER NOT NULL DEFAULT 0,
+                last_outgoing_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(owner_id,peer_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_merchant_customers_owner_seen
+                ON merchant_customers(owner_id,last_seen_at DESC,peer_id);
+
+            CREATE TABLE IF NOT EXISTS customer_meta (
+                owner_id INTEGER NOT NULL,
+                peer_id INTEGER NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(owner_id,peer_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS customer_collection_meta (
+                owner_id INTEGER NOT NULL,
+                peer_id INTEGER NOT NULL,
+                last_reminded_at INTEGER NOT NULL DEFAULT 0,
+                remind_count INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(owner_id,peer_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS welcome_message_settings (
+                owner_id INTEGER PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                template_text TEXT NOT NULL DEFAULT '',
+                cooldown_seconds INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS welcome_message_state (
+                owner_id INTEGER NOT NULL,
+                peer_id INTEGER NOT NULL,
+                last_sent_at INTEGER NOT NULL DEFAULT 0,
+                send_count INTEGER NOT NULL DEFAULT 0,
+                claim_at INTEGER NOT NULL DEFAULT 0,
+                previous_sent_at INTEGER NOT NULL DEFAULT 0,
+                previous_send_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(owner_id,peer_id)
+            );
             """)
             qcols = {str(r[1]) for r in conn.execute("PRAGMA table_info(quick_replies)").fetchall()}
             if "keywords_json" not in qcols:
@@ -112,8 +164,16 @@ def ensure_feature_schema() -> None:
             if "last_owner_activity_at" not in ocols:
                 conn.execute("ALTER TABLE offline_reply_settings ADD COLUMN last_owner_activity_at INTEGER NOT NULL DEFAULT 0")
 
+            wcols = {str(r[1]) for r in conn.execute("PRAGMA table_info(welcome_message_state)").fetchall()}
+            if "claim_at" not in wcols:
+                conn.execute("ALTER TABLE welcome_message_state ADD COLUMN claim_at INTEGER NOT NULL DEFAULT 0")
+            if "previous_sent_at" not in wcols:
+                conn.execute("ALTER TABLE welcome_message_state ADD COLUMN previous_sent_at INTEGER NOT NULL DEFAULT 0")
+            if "previous_send_count" not in wcols:
+                conn.execute("ALTER TABLE welcome_message_state ADD COLUMN previous_send_count INTEGER NOT NULL DEFAULT 0")
+
             conn.execute(
-                "INSERT INTO runtime_state(key,value,updated_at) VALUES('feature_schema','v23',?) "
+                "INSERT INTO runtime_state(key,value,updated_at) VALUES('feature_schema','r29',?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
                 (now,),
             )
@@ -223,7 +283,7 @@ def security_notice_html(state: str, title: str, fields=None, reasons=None, advi
 
 
 def scam_result_html(target: str, available: bool, rows: list[dict]) -> str:
-    """只展示 scam.py 从 config.SCAM_DB_PATH/scam_records 返回的真实结果，不做任何派生风险。"""
+    """只展示 scam.py 从墨清 Developer API 返回的真实收录结果，不在客户端派生风险。"""
     t = str(target or "").strip()
     if not available:
         return security_notice_html(
@@ -702,3 +762,88 @@ def try_calc_expression(raw: str) -> tuple[bool, str | None]:
         return True, f"{html.escape(src)}=除数不能为0"
     except Exception:
         return True, "计算格式错误，例如：<code>1-1+1*2</code>、<code>（2+3）*4</code>、<code>10÷2</code>、<code>2^3</code>"
+
+
+# ================== r29: lightweight Business welcome message ==================
+_WELCOME_VAR_RE = re.compile(r"\{(name|username|balance)\}")
+
+
+def welcome_get(owner_id: int) -> dict:
+    ensure_feature_schema()
+    conn = connect(APP_DB_PATH)
+    try:
+        row = conn.execute(
+            "SELECT enabled,template_text,cooldown_seconds,updated_at FROM welcome_message_settings WHERE owner_id=?",
+            (int(owner_id),),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return {"enabled":0,"template_text":"","cooldown_seconds":0,"updated_at":0}
+    return {"enabled":int(row[0] or 0),"template_text":str(row[1] or ""),"cooldown_seconds":int(row[2] or 0),"updated_at":int(row[3] or 0)}
+
+
+def welcome_save(owner_id: int, *, enabled=None, template_text=None, cooldown_seconds=None) -> dict:
+    ensure_feature_schema(); oid=int(owner_id); old=welcome_get(oid); now=int(time.time())
+    en=int(old["enabled"] if enabled is None else bool(enabled))
+    body=str(old["template_text"] if template_text is None else (template_text or "")).strip()[:3500]
+    cooldown=int(old["cooldown_seconds"] if cooldown_seconds is None else max(0,min(365*86400,int(cooldown_seconds or 0))))
+    if en and not body:
+        raise ValueError("欢迎消息正文不能为空")
+    with tx(APP_DB_PATH, immediate=True) as conn:
+        conn.execute(
+            """INSERT INTO welcome_message_settings(owner_id,enabled,template_text,cooldown_seconds,updated_at) VALUES(?,?,?,?,?)
+            ON CONFLICT(owner_id) DO UPDATE SET enabled=excluded.enabled,template_text=excluded.template_text,cooldown_seconds=excluded.cooldown_seconds,updated_at=excluded.updated_at""",
+            (oid,en,body,cooldown,now),
+        )
+    return {"enabled":en,"template_text":body,"cooldown_seconds":cooldown,"updated_at":now}
+
+
+def welcome_render(template_text: str, context: dict | None = None) -> str:
+    ctx=dict(context or {})
+    def repl(m):
+        return html.escape(str(ctx.get(m.group(1),"") or ""), quote=False)
+    return _WELCOME_VAR_RE.sub(repl, str(template_text or ""))
+
+
+def welcome_claim(owner_id: int, peer_id: int, now_ts: int | None = None) -> bool:
+    st=welcome_get(owner_id)
+    if not int(st.get("enabled") or 0) or not str(st.get("template_text") or "").strip():
+        return False
+    now=int(time.time() if now_ts is None else now_ts); oid=int(owner_id); pid=int(peer_id)
+    with tx(APP_DB_PATH, immediate=True) as conn:
+        row=conn.execute("SELECT last_sent_at,send_count,claim_at,previous_sent_at,previous_send_count FROM welcome_message_state WHERE owner_id=? AND peer_id=?",(oid,pid)).fetchone()
+        last=int(row[0] or 0) if row else 0; count=int(row[1] or 0) if row else 0; pending=int(row[2] or 0) if row else 0
+        # stale pending claim: restore previous committed state before evaluating cooldown
+        if row and pending and now-pending>300:
+            last=int(row[3] or 0); count=int(row[4] or 0); pending=0
+            conn.execute("UPDATE welcome_message_state SET last_sent_at=?,send_count=?,claim_at=0,previous_sent_at=0,previous_send_count=0 WHERE owner_id=? AND peer_id=?",(last,count,oid,pid))
+        if pending:
+            return False
+        cooldown=max(0,int(st.get("cooldown_seconds") or 0))
+        if last and (cooldown==0 or now-last<cooldown):
+            return False
+        conn.execute(
+            """INSERT INTO welcome_message_state(owner_id,peer_id,last_sent_at,send_count,claim_at,previous_sent_at,previous_send_count)
+            VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(owner_id,peer_id) DO UPDATE SET previous_sent_at=welcome_message_state.last_sent_at,previous_send_count=welcome_message_state.send_count,last_sent_at=excluded.last_sent_at,send_count=welcome_message_state.send_count+1,claim_at=excluded.claim_at""",
+            (oid,pid,now,count+1,now,last,count),
+        )
+    return True
+
+
+def welcome_commit(owner_id: int, peer_id: int, claimed_at: int) -> None:
+    with tx(APP_DB_PATH, immediate=True) as conn:
+        conn.execute("UPDATE welcome_message_state SET claim_at=0,previous_sent_at=0,previous_send_count=0 WHERE owner_id=? AND peer_id=? AND claim_at=?",(int(owner_id),int(peer_id),int(claimed_at)))
+
+
+def welcome_release(owner_id: int, peer_id: int, claimed_at: int) -> None:
+    with tx(APP_DB_PATH, immediate=True) as conn:
+        row=conn.execute("SELECT claim_at,previous_sent_at,previous_send_count FROM welcome_message_state WHERE owner_id=? AND peer_id=?",(int(owner_id),int(peer_id))).fetchone()
+        if not row or int(row[0] or 0)!=int(claimed_at): return
+        prev=int(row[1] or 0); prev_count=int(row[2] or 0)
+        if prev<=0 and prev_count<=0:
+            conn.execute("DELETE FROM welcome_message_state WHERE owner_id=? AND peer_id=?",(int(owner_id),int(peer_id)))
+        else:
+            conn.execute("UPDATE welcome_message_state SET last_sent_at=?,send_count=?,claim_at=0,previous_sent_at=0,previous_send_count=0 WHERE owner_id=? AND peer_id=?",(prev,prev_count,int(owner_id),int(peer_id)))
+# ================== r29 welcome message end ==================

@@ -96,6 +96,19 @@ def ensure_ledger_sync_identity_columns(conn: sqlite3.Connection) -> None:
         )
 
 
+def ensure_ledger_business_columns(conn: sqlite3.Connection) -> None:
+    """r33：为普通流水增加可选经营分类与成本。旧流水保持未分类，避免伪造历史利润。"""
+    cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(ledger)").fetchall()}
+    if "category" not in cols:
+        conn.execute("ALTER TABLE ledger ADD COLUMN category TEXT NOT NULL DEFAULT ''")
+    if "cost_micro" not in cols:
+        conn.execute("ALTER TABLE ledger ADD COLUMN cost_micro INTEGER NOT NULL DEFAULT 0")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ledger_owner_category_time "
+        "ON ledger(owner_id,category,time)"
+    )
+
+
 def init_ledger_db(path: Path | str = LEDGER_DB_PATH) -> None:
     key = _schema_key("ledger", path)
     with _DB_LOCK:
@@ -137,6 +150,7 @@ def init_ledger_db(path: Path | str = LEDGER_DB_PATH) -> None:
             ON item_ledger(owner_id, id);
         """)
             ensure_ledger_sync_identity_columns(conn)
+            ensure_ledger_business_columns(conn)
         _SCHEMA_READY.add(key)
 
 

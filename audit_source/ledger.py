@@ -14,6 +14,16 @@ from emoji_knowledge import system_icon as premium_system_icon
 
 LEDGER_RE = re.compile(r"^([+-])(\d+(?:\.\d{1,4})?)(?:\s+(.+))?$")
 ITEM_LEDGER_RE = re.compile(r"^([+-])(\d+(?:\.\d{1,4})?)([^\d\s+\-*/\()（）.,，。:：;；][^\s+\-*/\()（）.,，。:：;；]{0,31})$")
+BUSINESS_CATEGORIES = ("商品", "服务", "广告", "服务器", "手续费", "人工", "其他")
+
+
+def normalize_category(value: str) -> str:
+    v = str(value or "").strip()
+    if not v:
+        return ""
+    if v not in BUSINESS_CATEGORIES:
+        raise ValueError("不支持的账目分类")
+    return v
 
 
 def now_str() -> str:
@@ -63,12 +73,29 @@ def get_balance(owner_id: int, peer_id: int = 0) -> int:
         conn.close()
 
 
-def add_record(owner_id: int, peer_id: int, user_name: str, action: str, amount_micro: int, balance_micro: int, remark: str = "") -> int:
+def add_record(
+    owner_id: int,
+    peer_id: int,
+    user_name: str,
+    action: str,
+    amount_micro: int,
+    balance_micro: int,
+    remark: str = "",
+    *,
+    category: str = "",
+    cost_micro: int = 0,
+) -> int:
+    init_ledger_db()
+    cat = normalize_category(category)
+    cost = max(0, int(cost_micro or 0))
     with tx(LEDGER_DB_PATH, immediate=True) as conn:
         cur = conn.execute("""
-            INSERT INTO ledger(owner_id,peer_id,user_name,action,amount_micro,balance_micro,remark,time)
-            VALUES(?,?,?,?,?,?,?,?)
-        """, (int(owner_id), int(peer_id), str(user_name or "未知"), str(action or ""), int(amount_micro), int(balance_micro), str(remark or ""), now_str()))
+            INSERT INTO ledger(owner_id,peer_id,user_name,action,amount_micro,balance_micro,remark,time,category,cost_micro)
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+        """, (
+            int(owner_id), int(peer_id), str(user_name or "未知"), str(action or ""),
+            int(amount_micro), int(balance_micro), str(remark or ""), now_str(), cat, cost,
+        ))
         return int(cur.lastrowid)
 
 
@@ -96,7 +123,7 @@ def recent(owner_id: int, peer_id: int = 0, limit: int = 12):
     conn = connect(LEDGER_DB_PATH)
     try:
         return conn.execute("""
-            SELECT id,time,user_name,action,amount_micro,balance_micro,remark
+            SELECT id,time,user_name,action,amount_micro,balance_micro,remark,category,cost_micro
             FROM ledger WHERE owner_id=? AND peer_id=? ORDER BY id DESC LIMIT ?
         """, (int(owner_id), int(peer_id), int(limit))).fetchall()
     finally:

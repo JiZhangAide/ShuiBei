@@ -1,32 +1,28 @@
-# Runtime / secrets
 .env
 .env.*
 *.key
 *.pem
-*.session
-*.session-journal
-keys.txt
-query.log
+*.p12
+*.pfx
+private_config.py
+runtime-data/
+*.db
+*.sqlite
+*.sqlite3
+*-wal
+*-shm
+*-journal
 *.log
 *.pid
 *.lock
-*.db
-*.db-wal
-*.db-shm
-*.sqlite
-*.sqlite3
-.updates_offset
+*.offset
 *.ready.json
 *.status.json
-
-# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
 venv/
-
-# Local / editor
-.DS_Store
 .idea/
 .vscode/
+.DS_Store

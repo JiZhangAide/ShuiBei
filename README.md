@@ -1,50 +1,15 @@
 # ShuiBei / 水杯记账
 
-水杯记账是墨清体系中的轻量记账机器人。本仓库公开的是**用于安全审计与代码复核的源码快照**，重点覆盖账本、数据存储、消息保护、访问控制和客户端协议等核心逻辑。
+水杯记账是墨清体系中的轻量记账机器人。本仓库提供**公开审计源码（source-available audit source）**，目标是让业务核心可读、可审计，同时不分发生产凭据、内部路径、私有服务接线和可直接复刻线上服务的部署材料。
 
-## 公开范围
+当前快照按 2026-09-27 的生产代码整理，覆盖账本、客户、应收、SQLite、消息保护、会员/访问控制、Telegram 客户端、Mini App initData 校验，以及反诈/FakeBot 的字段语义。
 
-公开代码用于回答这些问题：
+反诈、FakeBot、Mini App 启动和运行授权均通过 `audit_source/moqing_gateway.py` 进入私有墨清运行层。公开仓不保存真实生产域名/路由、服务器目录、密钥文件位置、上游 session 或部署拓扑。
 
-- 金额与余额如何计算、落库和导出；
-- 本地数据库如何初始化、事务化和保护；
-- 防编辑 / 防撤回缓存如何加密、过期和清理；
-- 用户状态、会员状态与访问控制如何处理；
-- Telegram 请求如何构造、失败如何降级；
-- 墨清体系能力在公开代码中的调用边界在哪里。
+完整快照默认 fail closed。公开源码无法物理阻止第三方修改本地检查，所以商业保护的真实边界是私有后端能力、生产凭据、品牌/许可和未公开运行环境，而不是混淆代码。
 
-## 不在仓库中的内容
+不公开：生产配置与凭据、服务器路径/内网信息/真实 Developer API 路由、启动部署脚本、私有 transport、支付接线、运营后台、生产数据库/日志/运行态文件，以及 Mini App 生产发布路由。
 
-以下内容有意不公开，也不应出现在任何提交历史中：
+优先审计：`audit_source/app.py`、`ledger.py`、`db.py`、`customers.py`、`receivables.py`、`message_protection.py`、`access_control.py`、`moqing_gateway.py`、`runtime_guard.py`。
 
-- Bot Token、API Key、私钥、卡密及生产凭据；
-- 服务器绝对路径、内网地址、主机信息和部署拓扑；
-- 墨清内部 API 实际地址、内部路由与上游账号/session；
-- 生产数据库、日志、PID/lock/offset/ready 状态文件；
-- 私有支付、风控、反诈数据源和运营后台实现；
-- 生产部署脚本及可直接复刻线上服务的配置。
-
-公开版中的墨清能力通过抽象网关表示，具体端点和授权只在私有部署环境注入。
-
-## 关于运行
-
-本仓库不是独立可部署发行版。生产运行需要墨清体系签发的运行环境、私有配置与后端能力。缺少这些依赖时，公开入口会保持 fail-closed，而不是回退到一个可自行运营的独立机器人。
-
-这样设计不是为了隐藏可审计的业务逻辑，而是把“可审计代码”和“生产基础设施/商业服务能力”明确分层。
-
-## 安全审计
-
-建议优先审阅：
-
-- `audit_source/ledger.py`
-- `audit_source/db.py`
-- `audit_source/message_protection.py`
-- `audit_source/membership.py`
-- `audit_source/access_control.py`
-- `audit_source/telegram_api.py`
-- `audit_source/runtime_guard.py`
-- `SECURITY.md`
-
-## 许可
-
-本仓库是公开审计源码，不等同于授予第三方商业运营权。具体见 `AUDIT-LICENSE.md`。
+本仓库不是 OSI 定义的开源发行版，也不授予第三方商业运营权。见 `AUDIT-LICENSE.md`。

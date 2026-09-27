@@ -1,75 +1,57 @@
 # -*- coding: utf-8 -*-
-"""Public contract for MoQing-backed capabilities.
-
-This file deliberately exposes validation semantics, not production routing.
-The private runtime injects the actual transport, endpoint and authorization.
-"""
+"""Public MoQing capability contract."""
 from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
-MAX_QUERY_PARTS = 6
-MAX_QUERY_LENGTH = 25
-BLOCKED_COMMANDS = {"/start", "/invite"}
-
+CAP_ANTIFRAUD_RECORDS = "antifraud.records"
+CAP_FAKEBOT_CHECK = "fakebot.check"
+CAP_RUNTIME_ENTITLEMENT = "runtime.entitlement"
+CAP_MINIAPP_LAUNCH = "miniapp.launch"
 
 class MoQingGatewayError(RuntimeError):
     pass
 
-
 class MoQingRuntimeUnavailable(MoQingGatewayError):
     pass
 
-
-def normalize_query_parts(parts: Iterable[str]) -> tuple[str, ...]:
-    values = tuple(str(x or "").strip() for x in parts)
-    if not values or not values[0]:
-        raise ValueError("query1 is required")
-    if len(values) > MAX_QUERY_PARTS:
-        raise ValueError("at most query1..query6 are accepted")
-
-    cleaned: list[str] = []
-    for index, value in enumerate(values, start=1):
-        if not value:
-            continue
-        if len(value) > MAX_QUERY_LENGTH:
-            raise ValueError(f"query{index} exceeds {MAX_QUERY_LENGTH} characters")
-        if not value.isprintable():
-            raise ValueError(f"query{index} contains non-printable characters")
-        folded = value.casefold()
-        if any(folded == cmd or folded.startswith(cmd + " ") for cmd in BLOCKED_COMMANDS):
-            raise ValueError("service commands are not valid query input")
-        cleaned.append(value)
-
-    if not cleaned:
-        raise ValueError("empty query")
-    return tuple(cleaned)
-
+Transport = Callable[[str, dict[str, Any]], dict[str, Any]]
 
 @dataclass(frozen=True)
 class MoQingGateway:
-    """Thin public interface around a private MoQing transport.
+    transport: Transport
 
-    transport is provided only by the private production runtime.  The public
-    repository contains no hostname, route, key, session or infrastructure path.
-    """
-
-    transport: Callable[[str, dict[str, Any]], dict[str, Any]]
-
-    def antifraud_query(self, *parts: str) -> dict[str, Any]:
-        normalized = normalize_query_parts(parts)
-        payload = {f"query{i}": value for i, value in enumerate(normalized, start=1)}
-        result = self.transport("antifraud.query", payload)
+    def _call(self, capability: str, payload: dict[str, Any]) -> dict[str, Any]:
+        result = self.transport(str(capability), dict(payload))
         if not isinstance(result, dict):
             raise MoQingGatewayError("invalid MoQing response")
         return result
 
+    def antifraud_records(self, query: str) -> dict[str, Any]:
+        return self._call(CAP_ANTIFRAUD_RECORDS, {"query": str(query or "")})
+
+    def fakebot_check(self, username: str) -> dict[str, Any]:
+        return self._call(CAP_FAKEBOT_CHECK, {"username": str(username or "")})
+
     def runtime_entitlement(self, fingerprint: str) -> dict[str, Any]:
-        result = self.transport(
-            "runtime.entitlement",
-            {"product": "shuibei", "fingerprint": str(fingerprint or "")},
-        )
-        if not isinstance(result, dict):
-            raise MoQingGatewayError("invalid entitlement response")
-        return result
+        return self._call(CAP_RUNTIME_ENTITLEMENT, {"product": "shuibei", "fingerprint": str(fingerprint or "")})
+
+    def miniapp_url(self) -> str:
+        result = self._call(CAP_MINIAPP_LAUNCH, {"product": "shuibei"})
+        url = str(result.get("url") or "")
+        if not url.startswith("https://"):
+            raise MoQingGatewayError("invalid Mini App launch response")
+        return url
+
+_GATEWAY: MoQingGateway | None = None
+
+def install_private_gateway(gateway: MoQingGateway) -> None:
+    global _GATEWAY
+    if not isinstance(gateway, MoQingGateway):
+        raise TypeError("MoQingGateway is required")
+    _GATEWAY = gateway
+
+def current_gateway() -> MoQingGateway:
+    if _GATEWAY is None:
+        raise MoQingRuntimeUnavailable("MoQing private runtime adapter is required")
+    return _GATEWAY
