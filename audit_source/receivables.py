@@ -4,35 +4,48 @@ from __future__ import annotations
 import html
 import hashlib
 import json
+import threading
 import time
 from datetime import datetime, timedelta
 
 from config import APP_DB_PATH, LEDGER_DB_PATH
-from db import connect, tx, init_ledger_db
+from db import connect, tx, init_app_db, init_ledger_db, db_generation
 from ledger import currency, micro_to_str
 from customers import customer_detail, list_customers
 
 _VALID_STATUS = {"open", "settled", "cancelled"}
+_RECEIVABLE_SCHEMA_LOCK = threading.RLock()
+_RECEIVABLE_SCHEMA_GENERATION = -1
 
 
 def ensure_receivable_schema() -> None:
-    with tx(APP_DB_PATH, immediate=True) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS customer_receivable_meta(
-                owner_id INTEGER NOT NULL,
-                peer_id INTEGER NOT NULL,
-                due_at INTEGER NOT NULL DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'open',
-                note TEXT NOT NULL DEFAULT '',
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL,
-                PRIMARY KEY(owner_id, peer_id)
-            )
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_customer_receivable_due
-            ON customer_receivable_meta(owner_id, status, due_at)
-        """)
+    global _RECEIVABLE_SCHEMA_GENERATION
+    init_app_db()
+    generation = db_generation(APP_DB_PATH)
+    if generation > 0 and generation == _RECEIVABLE_SCHEMA_GENERATION:
+        return
+    with _RECEIVABLE_SCHEMA_LOCK:
+        generation = db_generation(APP_DB_PATH)
+        if generation > 0 and generation == _RECEIVABLE_SCHEMA_GENERATION:
+            return
+        with tx(APP_DB_PATH, immediate=True) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS customer_receivable_meta(
+                    owner_id INTEGER NOT NULL,
+                    peer_id INTEGER NOT NULL,
+                    due_at INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    note TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(owner_id, peer_id)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_customer_receivable_due
+                ON customer_receivable_meta(owner_id, status, due_at)
+            """)
+        _RECEIVABLE_SCHEMA_GENERATION = db_generation(APP_DB_PATH)
 
 
 def get_due(owner_id: int, peer_id: int) -> dict:
@@ -86,11 +99,33 @@ def _set_status(owner_id: int, peer_id: int, status: str) -> None:
         )
 
 
-def decorate_customer(owner_id: int, row: dict, now_ts: int | None = None) -> dict:
+def _due_map(owner_id: int) -> dict[int, dict]:
+    """Load all due metadata for one owner in a single indexed query."""
+    ensure_receivable_schema()
+    conn = connect(APP_DB_PATH)
+    try:
+        rows = conn.execute(
+            """SELECT peer_id,due_at,status,note,created_at,updated_at
+               FROM customer_receivable_meta WHERE owner_id=?""",
+            (int(owner_id),),
+        ).fetchall()
+    finally:
+        conn.close()
+    return {
+        int(r["peer_id"]): {
+            "due_at": int(r["due_at"] or 0),
+            "status": str(r["status"] or "open"),
+            "note": str(r["note"] or ""),
+            "created_at": int(r["created_at"] or 0),
+            "updated_at": int(r["updated_at"] or 0),
+        }
+        for r in rows
+    }
+
+
+def _decorate_customer_with_meta(row: dict, meta: dict | None, now: int) -> dict:
     out = dict(row or {})
-    pid = int(out.get("peer_id") or 0)
-    meta = get_due(int(owner_id), pid) if pid else {"due_at": 0, "status": "open", "note": ""}
-    now = int(time.time() if now_ts is None else now_ts)
+    meta = meta or {"due_at": 0, "status": "open", "note": ""}
     bal = int(out.get("balance_micro") or 0)
     due_at = int(meta.get("due_at") or 0)
     status = str(meta.get("status") or "open")
@@ -98,17 +133,37 @@ def decorate_customer(owner_id: int, row: dict, now_ts: int | None = None) -> di
         "due_at": due_at,
         "due_status": status,
         "due_note": str(meta.get("note") or ""),
-        "overdue": bool(bal < 0 and status == "open" and due_at > 0 and due_at < now),
+        "overdue": bool(bal < 0 and status == "open" and due_at > 0 and due_at < int(now)),
     })
     return out
 
 
-def due_customers(owner_id: int, mode: str = "due", limit: int = 100, now_ts: int | None = None) -> list[dict]:
+def decorate_customer(owner_id: int, row: dict, now_ts: int | None = None) -> dict:
+    out = dict(row or {})
+    pid = int(out.get("peer_id") or 0)
+    meta = get_due(int(owner_id), pid) if pid else {"due_at": 0, "status": "open", "note": ""}
     now = int(time.time() if now_ts is None else now_ts)
+    return _decorate_customer_with_meta(out, meta, now)
+
+
+def _due_customers_from_rows(
+    owner_id: int,
+    base_rows: list[dict],
+    mode: str,
+    limit: int,
+    now: int,
+) -> list[dict]:
     today = datetime.fromtimestamp(now)
     end_today = int(datetime(today.year, today.month, today.day, 23, 59, 59).timestamp())
-    rows = [decorate_customer(owner_id, r, now) for r in list_customers(owner_id, "all", limit=5000, now_ts=now)]
-    rows = [r for r in rows if int(r.get("balance_micro") or 0) < 0 and str(r.get("due_status") or "open") == "open"]
+    due_map = _due_map(owner_id)
+    rows = [
+        _decorate_customer_with_meta(r, due_map.get(int(r.get("peer_id") or 0)), now)
+        for r in base_rows
+    ]
+    rows = [
+        r for r in rows
+        if int(r.get("balance_micro") or 0) < 0 and str(r.get("due_status") or "open") == "open"
+    ]
     if mode == "overdue":
         rows = [r for r in rows if bool(r.get("overdue"))]
     elif mode == "today":
@@ -119,6 +174,12 @@ def due_customers(owner_id: int, mode: str = "due", limit: int = 100, now_ts: in
         rows = [r for r in rows if int(r.get("due_at") or 0) > 0]
     rows.sort(key=lambda r: (int(r.get("due_at") or 2**31), -abs(int(r.get("balance_micro") or 0))))
     return rows[:max(1, min(500, int(limit or 100)))]
+
+
+def due_customers(owner_id: int, mode: str = "due", limit: int = 100, now_ts: int | None = None) -> list[dict]:
+    now = int(time.time() if now_ts is None else now_ts)
+    base_rows = list_customers(owner_id, "all", limit=5000, now_ts=now)
+    return _due_customers_from_rows(owner_id, base_rows, str(mode or "due").lower(), limit, now)
 
 
 def settle_customer(owner_id: int, peer_id: int, *, mode: str, amount_micro: int = 0, remark: str = "", idempotency_key: str = "") -> dict:
@@ -135,11 +196,8 @@ def settle_customer(owner_id: int, peer_id: int, *, mode: str, amount_micro: int
     clean_remark = str(remark or "").strip()[:500]
     requested = int(amount_micro or 0) if clean_mode == "partial" else 0
     digest = hashlib.sha256(json.dumps([oid, pid, clean_mode, requested, clean_remark], ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+    init_ledger_db()
     with tx(LEDGER_DB_PATH, immediate=True) as conn:
-        conn.execute("""CREATE TABLE IF NOT EXISTS settlement_idempotency_v1(
-            owner_id INTEGER NOT NULL, idem_key TEXT NOT NULL, request_hash TEXT NOT NULL,
-            result_json TEXT NOT NULL, created_at INTEGER NOT NULL,
-            PRIMARY KEY(owner_id,idem_key))""")
         existing = conn.execute("SELECT request_hash,result_json FROM settlement_idempotency_v1 WHERE owner_id=? AND idem_key=?", (oid,key)).fetchone()
         if existing:
             if str(existing[0]) != digest:
@@ -275,7 +333,8 @@ def _report_between(owner_id: int, start_ts: int, end_ts: int, title: str, mode:
     all_customers = list_customers(int(owner_id), "all", limit=5000, now_ts=int(end_ts))
     receivable = sum(abs(int(r.get("balance_micro") or 0)) for r in all_customers if int(r.get("balance_micro") or 0) < 0)
     prepaid = sum(int(r.get("balance_micro") or 0) for r in all_customers if int(r.get("balance_micro") or 0) > 0)
-    overdue = len(due_customers(owner_id, "overdue", limit=500, now_ts=int(end_ts)))
+    # Reuse the customer snapshot instead of scanning/merging every customer a second time.
+    overdue = len(_due_customers_from_rows(owner_id, all_customers, "overdue", 500, int(end_ts)))
     return {
         "mode": str(mode or "custom").lower(),
         "title": str(title or "自定义"),

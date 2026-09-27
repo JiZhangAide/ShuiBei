@@ -196,7 +196,8 @@ def handle_text(owner_id: int, peer_id: int, user_name: str, text: str) -> tuple
     if not raw:
         return False, None, None
     st = get_settings(owner_id)
-    unit = currency(owner_id)
+    unit_raw = str(st.get("ledger_currency") or "USDT").upper()
+    unit = unit_raw if unit_raw in ALLOWED_CURRENCIES else "USDT"
 
     if raw in ("开启指定消费记账", "启用指定消费记账"):
         set_setting(owner_id, "item_ledger_enabled", 1)

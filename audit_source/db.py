@@ -12,6 +12,16 @@ from config import APP_DB_PATH, ARCHIVE_DB_PATH, LEDGER_DB_PATH, SYNC_DB_PATH, D
 
 _DB_LOCK = threading.RLock()
 _SCHEMA_READY: set[tuple[str, str]] = set()
+_WAL_READY: dict[str, tuple[int, int]] = {}
+_DB_GENERATION: dict[str, int] = {}
+
+
+def _file_identity(path: Path | str) -> tuple[int, int] | None:
+    try:
+        st = Path(path).stat()
+        return (int(st.st_dev), int(st.st_ino))
+    except OSError:
+        return None
 
 
 def _is_local_private_db(path: Path | str) -> bool:
@@ -45,6 +55,15 @@ def _schema_key(kind: str, path: Path | str) -> tuple[str, str]:
     return (str(kind), str(Path(path).resolve()))
 
 
+def db_generation(path: Path | str) -> int:
+    return int(_DB_GENERATION.get(str(Path(path).resolve()), 0))
+
+
+def _bump_db_generation(path: Path | str) -> None:
+    key = str(Path(path).resolve())
+    _DB_GENERATION[key] = int(_DB_GENERATION.get(key, 0)) + 1
+
+
 def connect(path: Path | str, timeout: float = 30.0, readonly: bool = False) -> sqlite3.Connection:
     p = Path(path)
     if readonly:
@@ -58,7 +77,17 @@ def connect(path: Path | str, timeout: float = 30.0, readonly: bool = False) -> 
     try:
         conn.execute(f"PRAGMA busy_timeout={max(1000, int(timeout * 1000))}")
         if not readonly:
-            conn.execute("PRAGMA journal_mode=WAL")
+            # journal_mode is persistent per database file. Re-applying it on every
+            # short-lived connection adds locking/syscall overhead on hot message paths.
+            key = str(p.resolve())
+            ident = _file_identity(p)
+            with _DB_LOCK:
+                if ident is None or _WAL_READY.get(key) != ident:
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    ident = _file_identity(p)
+                    if ident is not None:
+                        _WAL_READY[key] = ident
+            # These PRAGMAs are connection-local and must still be applied each time.
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA foreign_keys=ON")
     except Exception:
@@ -114,6 +143,9 @@ def init_ledger_db(path: Path | str = LEDGER_DB_PATH) -> None:
     with _DB_LOCK:
         if key in _SCHEMA_READY:
             return
+        # A test/deployment may replace the database file at the same path.
+        # Force one WAL verification whenever schema initialization genuinely reruns.
+        _WAL_READY.pop(str(Path(path).resolve()), None)
         with tx(path, immediate=True) as conn:
             conn.executescript("""
         CREATE TABLE IF NOT EXISTS ledger (
@@ -148,9 +180,34 @@ def init_ledger_db(path: Path | str = LEDGER_DB_PATH) -> None:
             ON item_ledger(owner_id, peer_id, item_name, id);
         CREATE INDEX IF NOT EXISTS idx_item_owner_id
             ON item_ledger(owner_id, id);
+
+        CREATE TABLE IF NOT EXISTS settlement_idempotency_v1(
+            owner_id INTEGER NOT NULL,
+            idem_key TEXT NOT NULL,
+            request_hash TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(owner_id, idem_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS miniapp_idempotency(
+            owner_id INTEGER NOT NULL,
+            idem_key TEXT NOT NULL,
+            result_json TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            request_hash TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(owner_id, idem_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_miniapp_idempotency_created
+            ON miniapp_idempotency(owner_id, created_at);
         """)
+            # Older deployments may already have the MiniApp table without request_hash.
+            mini_cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(miniapp_idempotency)").fetchall()}
+            if "request_hash" not in mini_cols:
+                conn.execute("ALTER TABLE miniapp_idempotency ADD COLUMN request_hash TEXT NOT NULL DEFAULT ''")
             ensure_ledger_sync_identity_columns(conn)
             ensure_ledger_business_columns(conn)
+        _bump_db_generation(path)
         _SCHEMA_READY.add(key)
 
 
@@ -159,6 +216,9 @@ def init_app_db(path: Path | str = APP_DB_PATH) -> None:
     with _DB_LOCK:
         if key in _SCHEMA_READY:
             return
+        # A test/deployment may replace the database file at the same path.
+        # Force one WAL verification whenever schema initialization genuinely reruns.
+        _WAL_READY.pop(str(Path(path).resolve()), None)
         now = int(time.time())
         with tx(path, immediate=True) as conn:
             conn.executescript("""
@@ -214,6 +274,7 @@ def init_app_db(path: Path | str = APP_DB_PATH) -> None:
                 "INSERT OR IGNORE INTO runtime_state(key,value,updated_at) VALUES('schema_version','1',?)",
                 (now,),
             )
+        _bump_db_generation(path)
         _SCHEMA_READY.add(key)
 
 
@@ -223,6 +284,9 @@ def init_sync_db(path: Path | str = SYNC_DB_PATH) -> None:
     with _DB_LOCK:
         if key in _SCHEMA_READY:
             return
+        # A test/deployment may replace the database file at the same path.
+        # Force one WAL verification whenever schema initialization genuinely reruns.
+        _WAL_READY.pop(str(Path(path).resolve()), None)
         with tx(path, immediate=True) as conn:
             conn.executescript("""
         CREATE TABLE IF NOT EXISTS sync_events (
@@ -259,6 +323,7 @@ def init_sync_db(path: Path | str = SYNC_DB_PATH) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_sync_runs_owner ON sync_runs(owner_id, id DESC);
             """)
+        _bump_db_generation(path)
         _SCHEMA_READY.add(key)
 
 

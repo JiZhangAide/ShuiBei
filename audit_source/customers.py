@@ -247,37 +247,112 @@ def mark_collection_reminded(owner_id: int, peer_id: int, now_ts: int | None = N
 
 
 def customer_detail(owner_id: int, peer_id: int) -> dict | None:
+    """Fetch one customer directly instead of materializing/sorting the whole customer set."""
     oid, pid = int(owner_id), int(peer_id)
-    rows = [r for r in list_customers(oid, "all", limit=5000) if int(r["peer_id"]) == pid]
-    if not rows:
-        return None
-    out = dict(rows[0])
+    ensure_feature_schema()
     init_ledger_db()
+
+    conn = connect(APP_DB_PATH)
+    try:
+        br = conn.execute(
+            "SELECT * FROM merchant_customers WHERE owner_id=? AND peer_id=? LIMIT 1",
+            (oid, pid),
+        ).fetchone()
+        mr = conn.execute(
+            "SELECT * FROM customer_meta WHERE owner_id=? AND peer_id=? LIMIT 1",
+            (oid, pid),
+        ).fetchone()
+        cr = conn.execute(
+            "SELECT * FROM customer_collection_meta WHERE owner_id=? AND peer_id=? LIMIT 1",
+            (oid, pid),
+        ).fetchone()
+    finally:
+        conn.close()
+
     conn = connect(LEDGER_DB_PATH)
     try:
         hist = conn.execute(
-            "SELECT id,action,amount_micro,balance_micro,remark,time FROM ledger WHERE owner_id=? AND peer_id=? ORDER BY id DESC LIMIT 8",
+            """SELECT id,user_name,action,amount_micro,balance_micro,remark,time
+               FROM ledger WHERE owner_id=? AND peer_id=? ORDER BY id DESC LIMIT 8""",
             (oid, pid),
         ).fetchall()
-        out["recent_ledger"] = [dict(r) for r in hist]
     finally:
         conn.close()
+
+    if not br and not hist:
+        return None
+
+    latest = hist[0] if hist else None
+    lr = None
+    if latest is not None:
+        ledger_time = str(latest["time"] or "")
+        lr = {
+            "peer_id": pid,
+            "user_name": str(latest["user_name"] or ""),
+            "balance_micro": int(latest["balance_micro"] or 0),
+            "ledger_time": ledger_time,
+            "ledger_time_ts": _ledger_time_ts(ledger_time),
+            "ledger_id": int(latest["id"] or 0),
+        }
+    out = _merge_customer(
+        oid, pid, lr,
+        dict(br) if br else None,
+        dict(mr) if mr else None,
+        dict(cr) if cr else None,
+    )
+    out["recent_ledger"] = [
+        {
+            "id": int(r["id"] or 0),
+            "action": str(r["action"] or ""),
+            "amount_micro": int(r["amount_micro"] or 0),
+            "balance_micro": int(r["balance_micro"] or 0),
+            "remark": str(r["remark"] or ""),
+            "time": str(r["time"] or ""),
+        }
+        for r in hist
+    ]
     return out
 
 
 def merchant_summary(owner_id: int, now_ts: int | None = None) -> dict:
+    """Compute dashboard counters without building/sorting full CRM customer objects."""
+    oid = int(owner_id)
     now = int(time.time() if now_ts is None else now_ts)
-    rows = list_customers(int(owner_id), "all", limit=5000, now_ts=now)
-    debt = [r for r in rows if int(r["balance_micro"]) < 0]
-    prepay = [r for r in rows if int(r["balance_micro"]) > 0]
-    recent = [r for r in rows if int(r["last_contact_at"]) > 0 and now - int(r["last_contact_at"]) <= RECENT_ACTIVE_SECONDS]
+    ledger_rows = _latest_ledger_rows(oid)
+    ensure_feature_schema()
+    conn = connect(APP_DB_PATH)
+    try:
+        business_seen = {
+            int(r["peer_id"]): int(r["last_seen_at"] or 0)
+            for r in conn.execute(
+                "SELECT peer_id,last_seen_at FROM merchant_customers WHERE owner_id=?",
+                (oid,),
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+    ids = set(ledger_rows) | set(business_seen)
+    debt_count = debt_amount = prepay_count = prepay_amount = recent_count = 0
+    for pid in ids:
+        lr = ledger_rows.get(pid) or {}
+        bal = int(lr.get("balance_micro") or 0)
+        if bal < 0:
+            debt_count += 1
+            debt_amount += abs(bal)
+        elif bal > 0:
+            prepay_count += 1
+            prepay_amount += bal
+        last_contact = max(int(lr.get("ledger_time_ts") or 0), int(business_seen.get(pid) or 0))
+        if last_contact > 0 and now - last_contact <= RECENT_ACTIVE_SECONDS:
+            recent_count += 1
     return {
-        "customer_count": len(rows),
-        "debt_count": len(debt),
-        "debt_amount_micro": sum(abs(int(r["balance_micro"])) for r in debt),
-        "prepay_count": len(prepay),
-        "prepay_amount_micro": sum(int(r["balance_micro"]) for r in prepay),
-        "recent_count": len(recent),
+        "customer_count": len(ids),
+        "debt_count": debt_count,
+        "debt_amount_micro": debt_amount,
+        "prepay_count": prepay_count,
+        "prepay_amount_micro": prepay_amount,
+        "recent_count": recent_count,
     }
 
 
