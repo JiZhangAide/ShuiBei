@@ -1,0 +1,32 @@
+# Runtime / secrets
+.env
+.env.*
+*.key
+*.pem
+*.session
+*.session-journal
+keys.txt
+query.log
+*.log
+*.pid
+*.lock
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+.updates_offset
+*.ready.json
+*.status.json
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local / editor
+.DS_Store
+.idea/
+.vscode/
