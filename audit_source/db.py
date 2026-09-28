@@ -305,6 +305,9 @@ def init_sync_db(path: Path | str = SYNC_DB_PATH) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_sync_owner_table
             ON sync_events(owner_id, table_name, tombstoned, created_at);
+        CREATE INDEX IF NOT EXISTS idx_sync_active_order
+            ON sync_events(owner_id, table_name, created_at, origin_row_id, event_uuid)
+            WHERE tombstoned=0;
         CREATE INDEX IF NOT EXISTS idx_sync_main_row
             ON sync_events(owner_id, table_name, main_row_id);
         CREATE INDEX IF NOT EXISTS idx_sync_water_row
