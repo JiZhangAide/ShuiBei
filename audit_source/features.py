@@ -92,6 +92,10 @@ def ensure_feature_schema() -> None:
                 peer_username TEXT NOT NULL DEFAULT '',
                 updated_at INTEGER NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS idx_business_enabled_owner
+                ON business_connections(owner_id) WHERE is_enabled=1;
+            CREATE INDEX IF NOT EXISTS idx_last_active_business_chat
+                ON last_active_business(chat_id) WHERE chat_id<>0;
 
             CREATE TABLE IF NOT EXISTS ui_wait_state (
                 owner_id INTEGER PRIMARY KEY,
