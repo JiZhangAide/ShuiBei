@@ -99,6 +99,42 @@ def add_record(
         return int(cur.lastrowid)
 
 
+def apply_delta(
+    owner_id: int,
+    peer_id: int,
+    user_name: str,
+    action: str,
+    delta_micro: int,
+    remark: str = "",
+    *,
+    category: str = "",
+    cost_micro: int = 0,
+) -> tuple[int, int, int]:
+    """Atomically apply a balance delta and append the corresponding ledger row."""
+    init_ledger_db()
+    oid, pid = int(owner_id), int(peer_id)
+    delta = int(delta_micro)
+    cat = normalize_category(category)
+    cost = max(0, int(cost_micro or 0))
+    with tx(LEDGER_DB_PATH, immediate=True) as conn:
+        row = conn.execute(
+            "SELECT balance_micro FROM ledger WHERE owner_id=? AND peer_id=? ORDER BY id DESC LIMIT 1",
+            (oid, pid),
+        ).fetchone()
+        before = int(row[0] or 0) if row else 0
+        after = before + delta
+        if not -(2**63) <= after <= 2**63 - 1:
+            raise ValueError("余额超出存储范围")
+        cur = conn.execute("""
+            INSERT INTO ledger(owner_id,peer_id,user_name,action,amount_micro,balance_micro,remark,time,category,cost_micro)
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+        """, (
+            oid, pid, str(user_name or "未知"), str(action or ""),
+            abs(delta), after, str(remark or ""), now_str(), cat, cost,
+        ))
+        return int(cur.lastrowid), before, after
+
+
 def clear_ledger(owner_id: int, peer_id: int, user_name: str) -> int:
     return add_record(owner_id, peer_id, user_name, "清账", 0, 0, "清账")
 
@@ -190,6 +226,26 @@ def _item_add(owner_id: int, peer_id: int, user_name: str, item_name: str, actio
         """, (int(owner_id), int(peer_id), str(item_name), str(user_name or "未知"), str(action), int(amount_micro), int(balance_micro), "", now_str()))
 
 
+def _item_apply_delta(owner_id: int, peer_id: int, user_name: str, item_name: str, action: str, delta_micro: int) -> tuple[int, int]:
+    oid, pid = int(owner_id), int(peer_id)
+    item = str(item_name)
+    delta = int(delta_micro)
+    with tx(LEDGER_DB_PATH, immediate=True) as conn:
+        row = conn.execute(
+            "SELECT balance_micro FROM item_ledger WHERE owner_id=? AND peer_id=? AND item_name=? ORDER BY id DESC LIMIT 1",
+            (oid, pid, item),
+        ).fetchone()
+        before = int(row[0] or 0) if row else 0
+        after = before + delta
+        if not -(2**63) <= after <= 2**63 - 1:
+            raise ValueError("余额超出存储范围")
+        conn.execute("""
+            INSERT INTO item_ledger(owner_id,peer_id,item_name,user_name,action,amount_micro,balance_micro,remark,time)
+            VALUES(?,?,?,?,?,?,?,?,?)
+        """, (oid, pid, item, str(user_name or "未知"), str(action), abs(delta), after, "", now_str()))
+        return before, after
+
+
 def handle_text(owner_id: int, peer_id: int, user_name: str, text: str) -> tuple[bool, str | None, str | None]:
     """返回 handled, reply_text, export_content。只处理个人/Business 账本，不含任何群账本。"""
     raw = str(text or "").strip()
@@ -210,18 +266,23 @@ def handle_text(owner_id: int, peer_id: int, user_name: str, text: str) -> tuple
     if im and int(st.get("item_ledger_enabled") or 0):
         sign, amount_s, item = im.groups()
         amount = parse_amount_to_micro(amount_s)
-        before = _item_balance(owner_id, peer_id, item)
-        after = before + amount if sign == "+" else before - amount
-        _item_add(owner_id, peer_id, user_name, item, "入" if sign == "+" else "出", amount, after)
+        _, after = _item_apply_delta(
+            owner_id, peer_id, user_name, item,
+            "入" if sign == "+" else "出",
+            amount if sign == "+" else -amount,
+        )
         return True, f"✅ {item}：{'+' if sign == '+' else '-'}{micro_to_str(amount)}\n当前：{micro_to_str(after)}", None
 
     m = LEDGER_RE.fullmatch(raw)
     if m:
         sign, amount_s, remark = m.groups()
         amount = parse_amount_to_micro(amount_s)
-        before = get_balance(owner_id, peer_id)
-        after = before + amount if sign == "+" else before - amount
-        add_record(owner_id, peer_id, user_name, "入" if sign == "+" else "出", amount, after, remark or "")
+        _, _, after = apply_delta(
+            owner_id, peer_id, user_name,
+            "入" if sign == "+" else "出",
+            amount if sign == "+" else -amount,
+            remark or "",
+        )
         return True, f"✅ {'入金' if sign == '+' else '出金'} {micro_to_str(amount)} {unit}\n当前余额：{micro_to_str(after)} {unit}" + (f"\n备注：{remark}" if remark else ""), None
 
     lo = raw.lower()
@@ -417,9 +478,12 @@ def handle_text(owner_id: int, peer_id: int, user_name: str, text: str) -> tuple
     if m:
         sign, amount_s, remark = m.groups()
         amount = parse_amount_to_micro(amount_s)
-        before = get_balance(owner_id, peer_id)
-        after = before + amount if sign == "+" else before - amount
-        add_record(owner_id, peer_id, user_name, "入" if sign == "+" else "出", amount, after, remark or "")
+        _, _, after = apply_delta(
+            owner_id, peer_id, user_name,
+            "入" if sign == "+" else "出",
+            amount if sign == "+" else -amount,
+            remark or "",
+        )
         return True, ledger_format_success_html("入金" if sign == "+" else "出金", f"{micro_to_str(amount)} {unit}", f"{micro_to_str(after)} {unit}", remark or ""), None
 
     im = ITEM_LEDGER_RE.fullmatch(raw)
@@ -428,9 +492,11 @@ def handle_text(owner_id: int, peer_id: int, user_name: str, text: str) -> tuple
             return True, "指定消费记账当前已关闭。\n如需使用 <code>+1可乐</code> / <code>-1可乐</code>，请先开启指定消费记账。", None
         sign, amount_s, item = im.groups()
         amount = parse_amount_to_micro(amount_s)
-        before = _item_balance(owner_id, peer_id, item)
-        after = before + amount if sign == "+" else before - amount
-        _item_add(owner_id, peer_id, user_name, item, "入" if sign == "+" else "出", amount, after)
+        _, after = _item_apply_delta(
+            owner_id, peer_id, user_name, item,
+            "入" if sign == "+" else "出",
+            amount if sign == "+" else -amount,
+        )
         return True, ledger_format_success_html("入金" if sign == "+" else "出金", f"{micro_to_str(amount)} {item}", f"{micro_to_str(after)} {item}"), None
 
     lo = raw.lower()
