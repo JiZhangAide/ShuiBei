@@ -68,12 +68,20 @@ class MembershipService:
                     telegram_premium INTEGER NOT NULL DEFAULT 0,
                     channel_checked_at INTEGER NOT NULL DEFAULT 0,
                     last_seen_at INTEGER NOT NULL DEFAULT 0,
-                    referral_token TEXT NOT NULL DEFAULT '' UNIQUE
+                    referral_token TEXT DEFAULT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_membership_expires
                     ON membership_users(expires_at, expiry_reminded_for);
                 CREATE INDEX IF NOT EXISTS idx_membership_seen
                     ON membership_users(last_seen_at);
+                CREATE INDEX IF NOT EXISTS idx_membership_activated
+                    ON membership_users(activated_at) WHERE activated_at>0;
+                CREATE INDEX IF NOT EXISTS idx_membership_reminder_due
+                    ON membership_users(expires_at)
+                    WHERE expires_at>0 AND expiry_reminded_for<>expires_at;
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_membership_referral_token_unique
+                    ON membership_users(referral_token)
+                    WHERE referral_token IS NOT NULL AND referral_token<>'';
 
                 CREATE TABLE IF NOT EXISTS membership_grants (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,6 +113,9 @@ class MembershipService:
                     ON referrals(inviter_id, completed_at);
                 CREATE INDEX IF NOT EXISTS idx_referrals_expiry
                     ON referrals(expires_at, completed_at, expired_at);
+                CREATE INDEX IF NOT EXISTS idx_referrals_pending_expiry
+                    ON referrals(expires_at)
+                    WHERE completed_at=0 AND expired_at=0;
 
                 CREATE TABLE IF NOT EXISTS shuibei_error_counters (
                     category TEXT PRIMARY KEY,
