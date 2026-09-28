@@ -40,3 +40,13 @@ def test_sqlite_wal_mode_is_process_cached():
 def test_hot_ledger_path_reuses_loaded_settings():
     body = _block(LEDGER, "def handle_text(", "\n# ================== v21")
     assert 'unit_raw = str(st.get("ledger_currency")' in body
+
+
+def test_hot_ledger_balance_update_is_transactional():
+    delta = _block(LEDGER, "def apply_delta(", "\ndef clear_ledger(")
+    assert "with tx(LEDGER_DB_PATH, immediate=True)" in delta
+    assert "SELECT balance_micro FROM ledger" in delta
+    assert "INSERT INTO ledger" in delta
+    hot = _block(LEDGER, "def handle_text(", "\n# ================== v21")
+    assert "apply_delta(" in hot
+    assert "before = get_balance" not in hot
