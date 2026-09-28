@@ -485,7 +485,7 @@ class MembershipService:
             conn.execute(
                 """
                 INSERT INTO shuibei_error_counters(category,count,last_at) VALUES(?,1,?)
-                ON CONFLICT(category) DO UPDATE SET count=count+1,last_at=excluded.last_at
+                ON CONFLICT(category) DO UPDATE SET count=shuibei_error_counters.count+1,last_at=excluded.last_at
                 """,
                 (cat, now),
             )
