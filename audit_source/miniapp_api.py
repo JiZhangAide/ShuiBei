@@ -720,12 +720,13 @@ def register_shuibei_miniapp(app, *, static_dir: str):
     def advanced_entry_meta(ledger_id: int):
         uid = int(g.shuibei_auth.user_id)
         body = request.get_json(silent=True) or {}
+        if "status" in body or "reversal_of" in body:
+            return _fail("账目状态和冲正关系必须通过专用操作修改", 400)
         try:
             return _ok(set_entry_meta(
                 uid,
                 ledger_id,
                 book_id=body.get("book_id") if "book_id" in body else None,
-                status=body.get("status") if "status" in body else None,
                 source_message_id=body.get("source_message_id") if "source_message_id" in body else None,
                 attachment_ref=body.get("attachment_ref") if "attachment_ref" in body else None,
             ))
