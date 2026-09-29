@@ -1,6 +1,13 @@
 import importlib
 import os
+import sys
 import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+MODULE_ROOT = ROOT / "audit_source" if (ROOT / "audit_source").is_dir() else ROOT
+if str(MODULE_ROOT) not in sys.path:
+    sys.path.insert(0, str(MODULE_ROOT))
 
 os.environ.setdefault("SHUIBEI_DATA_DIR", f"/tmp/shuibei-tests-{os.getpid()}")
 
