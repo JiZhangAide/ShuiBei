@@ -301,12 +301,18 @@ def _report_between(owner_id: int, start_ts: int, end_ts: int, title: str, mode:
     conn = connect(LEDGER_DB_PATH)
     try:
         rows = conn.execute(
-            """SELECT peer_id,action,amount_micro,time,category,cost_micro FROM ledger
+            """SELECT id,peer_id,action,amount_micro,time,category,cost_micro FROM ledger
                WHERE owner_id=? AND time>=? AND time<=? ORDER BY id ASC""",
             (int(owner_id), start_s, end_s),
         ).fetchall()
     finally:
         conn.close()
+    try:
+        from advanced_ledger import accounting_excluded_ledger_ids
+        excluded_ids = accounting_excluded_ledger_ids(int(owner_id), [int(r["id"]) for r in rows])
+        rows = [r for r in rows if int(r["id"]) not in excluded_ids]
+    except Exception:
+        pass
     inflow = sum(int(r["amount_micro"] or 0) for r in rows if str(r["action"] or "") in ("入", "收入", "+"))
     outflow = sum(int(r["amount_micro"] or 0) for r in rows if str(r["action"] or "") in ("出", "支出", "-"))
     waived = sum(int(r["amount_micro"] or 0) for r in rows if str(r["action"] or "") == "减免")
