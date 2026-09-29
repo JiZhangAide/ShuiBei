@@ -117,8 +117,11 @@ python -m audit_source all
 
 - `GET https://api.jizhang.org/api/v1/fanzha/records`
 - `GET https://api.jizhang.org/api/v1/fakebot/check`
+- `GET https://api.jizhang.org/api/v1/telegram/profile/history`：用于已建立 Business 客户的公开资料历史；当前为 Pro Developer API 能力，50 Credits / 次。
 
-没有 Developer API Key 时，Bot 本身仍然可以启动和使用本地记账/客户/应收等功能，只是上述依赖墨清数据的功能会显示不可用。
+Telegram Business 的“管理机器人”入口支持 `/start bizChat<user_id>`：只会打开当前 owner 已建立的 Business 客户档案，不接受借此查询任意用户。客户档案中的公开资料历史默认直接展示最新一条，更早记录使用 Telegram 可展开引用折叠。
+
+没有 Developer API Key、Key 权限不足或 API 暂时不可用时，Bot 本身仍然可以启动和使用本地记账/客户/应收等功能；依赖墨清数据的资料历史、反诈和 FakeBot 能力会降级为不可用提示。
 
 TRON / USDT、TON、汇率和基础币价查询仍然直接使用公开上游；`SHUIBEI_TRONGRID_API_KEY` 只是可选增强。
 
