@@ -44,13 +44,12 @@ _RUNTIME_STATE_LOCK = threading.RLock()
 def _runtime_source_fingerprint() -> str:
     h = hashlib.sha256()
     sources = [(name, _RUNTIME_ROOT / name) for name in (
-        "start.py", "app.py", "telegram_api.py", "config.py", "db.py", "features.py",
-        "customers.py", "ledger.py", "receivables.py", "membership.py", "access_control.py",
-        "message_protection.py", "sync.py", "scam.py", "fakebot.py", "developer_api.py",
-        "miniapp_api.py", "miniapp_auth.py", "public_runtime.py", "emoji_knowledge.py",
-        "premium_emoji_knowledge.json",
+        "app.py", "telegram_api.py", "config.py", "db.py", "features.py",
+        "customers.py", "ledger.py", "receivables.py", "membership.py",
+        "access_control.py", "message_protection.py", "sync.py", "scam.py",
+        "fakebot.py", "developer_api.py", "miniapp_auth.py", "miniapp_api.py",
+        "public_runtime.py", "crypto_tools.py", "emoji_knowledge.py",
     )]
-    sources.append(("../premium_emoji_knowledge.json", _RUNTIME_ROOT.parent / "premium_emoji_knowledge.json"))
     for name, fp in sources:
         h.update(name.encode("utf-8") + b"\0")
         try:
@@ -893,6 +892,7 @@ def _private_command(api: TelegramAPI, message: dict) -> bool:
             try:
                 _kw_add(owner_id, key, reply); api.send_message(chat_id, _ui_notice("safe", "关键词回复已保存"))
             except Exception as exc:
+
                 api.send_message(chat_id, _ui_notice("unknown", "操作失败", str(exc)))
         return True
     if text.startswith("/kwdel "):
@@ -1181,9 +1181,535 @@ def _callback(api: TelegramAPI, cq: dict) -> None:
             edit(_r29_home_text(owner_id), main_keyboard(owner_id, "home"))
         except Exception as exc:
             print(f"[ShuiBei] onboarding home render fallback: {type(exc).__name__}: {str(exc)[:160]}", flush=True)
-            _send_start_plain_fallback(
-…[sentinelx: truncated 35318 bytes]…
-n("久未联系", "customer:list:inactive", icon_custom_emoji_id=premium_icon("notification"), style="primary")],
+            _send_start_plain_fallback(api, chat_id, first_time=False)
+        return
+    if data == "menu:home":
+        try:
+            edit(_r29_home_text(owner_id), main_keyboard(owner_id, "home"))
+        except Exception as exc:
+            print(f"[ShuiBei] home render fallback: {type(exc).__name__}: {str(exc)[:160]}", flush=True)
+            _send_start_plain_fallback(api, chat_id, first_time=False)
+        return
+    if data.startswith("menu:section:"):
+        sec = data.rsplit(":", 1)[1]
+        if sec in {"msg", "finance", "other"}:
+            edit(section_text(sec), main_keyboard(owner_id, sec)); return
+    if data == "menu:antifraud" or data == "menu:scam":
+        edit(_v21_antifraud_text(), {"inline_keyboard": [
+            [button("诈骗记录查询", "antifraud:query", icon_custom_emoji_id=premium_icon("risk")),
+             button("FakeBot 检测", "menu:fakebot", icon_custom_emoji_id=premium_icon("fakebot"))],
+            [_v21_back_home()],
+        ]}); return
+    if data == "antifraud:query":
+        wait_set(owner_id, "scam_query", {})
+        edit("\n".join([_ui_title("risk", "诈骗记录查询", "🛡️"), "", "直接发送 Telegram 用户名或数字 ID。", "发送 <code>/cancel</code> 退出查询。"]), {"inline_keyboard": [[button("取消", "antifraud:cancel", icon_custom_emoji_id=premium_icon("back"))]]}); return
+    if data == "antifraud:cancel":
+        wait_clear(owner_id); edit(_v21_antifraud_text(), {"inline_keyboard": [[button("诈骗记录查询", "antifraud:query", icon_custom_emoji_id=premium_icon("risk")), button("FakeBot 检测", "menu:fakebot", icon_custom_emoji_id=premium_icon("fakebot"))], [_v21_back_home()]]}); return
+    if data == "menu:fakebot":
+        st = get_settings(owner_id); on = bool(int(st.get("fakebot_detect_enabled", 1) or 0))
+        edit("\n".join([_ui_title("fakebot", "FakeBot 检测", "🤖"), "", _ui_field("状态", "开启" if on else "关闭"), _ui_field("提醒位置", "仅机器人私信"), "", "Telegram 官方 fake/scam 标记只作为弱风险信号，不会单独触发严重处罚。"]), {"inline_keyboard": [[button(("关闭" if on else "开启") + " FakeBot 检测", "fakebot:toggle", selected=on, icon_custom_emoji_id=premium_icon("fakebot"))], [button("手动检测", "fakebot:query", icon_custom_emoji_id=premium_icon("preview"), style="primary")], [button("返回墨清反诈", "menu:antifraud", icon_custom_emoji_id=premium_icon("back"), style="primary")]]}); return
+    if data == "fakebot:toggle":
+        st = get_settings(owner_id); set_setting(owner_id, "fakebot_detect_enabled", 0 if int(st.get("fakebot_detect_enabled",1) or 0) else 1)
+        st = get_settings(owner_id); on = bool(int(st.get("fakebot_detect_enabled",1) or 0))
+        edit("\n".join([_ui_title("fakebot", "FakeBot 检测", "🤖"), "", _ui_field("状态", "开启" if on else "关闭"), _ui_field("提醒位置", "仅机器人私信"), "", "Telegram 官方 fake/scam 标记只作为弱风险信号，不会单独触发严重处罚。"]), {"inline_keyboard": [[button(("关闭" if on else "开启") + " FakeBot 检测", "fakebot:toggle", selected=on, icon_custom_emoji_id=premium_icon("fakebot"))], [button("手动检测", "fakebot:query", icon_custom_emoji_id=premium_icon("preview"), style="primary")], [button("返回墨清反诈", "menu:antifraud", icon_custom_emoji_id=premium_icon("back"), style="primary")]]}); return
+    if data == "fakebot:query":
+        wait_set(owner_id, "fakebot_query", {})
+        edit("\n".join([_ui_title("fakebot", "FakeBot 检测", "🤖"), "", "直接发送机器人用户名，例如 <code>@example_bot</code>。", "发送 <code>/cancel</code> 退出检测。"]), {"inline_keyboard": [[button("取消", "menu:fakebot", icon_custom_emoji_id=premium_icon("back"))]]}); return
+    if data == "menu:ledger":
+        edit(_v21_ledger_text(), {"inline_keyboard": [[button("账本统计", "menu:bill", icon_custom_emoji_id=premium_icon("finance"))], [_v21_back_home()]]}); return
+    if data == "menu:bill":
+        edit(bill_center_text(owner_id), _v21_bill_keyboard()); return
+    if data.startswith("bill:"):
+        mode = data.split(":", 1)[1]
+        if mode in {"all", "debt", "prepay"}:
+            edit(bill_list_text(owner_id, mode), {"inline_keyboard": [[button("返回账单中心", "menu:bill", icon_custom_emoji_id=premium_icon("back"))]]}); return
+        if mode == "export":
+            try:
+                _send_export(api, owner_id, owner_id)
+                api.send_message(owner_id, _ui_notice("safe", "总账已导出"))
+            except Exception:
+                api.send_message(owner_id, _ui_notice("unknown", "导出失败", "请稍后重试。"))
+            return
+    if data == "menu:quick":
+        edit(_v21_quick_text(owner_id), _v21_quick_keyboard(owner_id)); return
+    if data == "quick:add":
+        wait_set(owner_id, "quick_new_title")
+        edit("\n".join([_ui_title("messages", "设置快捷消息", "⚡"), "", _ui_field("第一步", "发送触发关键词；多个关键词可用逗号或换行分隔"), _ui_field("限制", "最多20个，单个最多80字"), _ui_field("取消", "发送 /cancel")]), {"inline_keyboard": [[button("取消", "quick:cancel", icon_custom_emoji_id=premium_icon("back"))]]}); return
+    if data == "quick:cancel":
+        wait_clear(owner_id); edit(_v21_quick_text(owner_id), _v21_quick_keyboard(owner_id)); return
+    if data.startswith("quick:view:"):
+        try:
+            rid = int(data.rsplit(":", 1)[1]); record = quick_get(owner_id, rid)
+        except Exception:
+            record = None
+        edit(_v21_quick_detail_text(record), _v21_quick_detail_keyboard(record) if record else _v21_quick_keyboard(owner_id)); return
+    if data.startswith("quick:preview:"):
+        try: rid=int(data.rsplit(":",1)[1]); record=quick_get(owner_id,rid)
+        except Exception: record=None
+        if not record: edit(_ui_notice("unknown","快捷消息不存在"),_v21_quick_keyboard(owner_id)); return
+        body=str(record.get("reply_text") or "")[:3000]
+        try: api.send_message(owner_id,body,parse_mode="HTML")
+        except Exception: api.send_message(owner_id,re.sub(r"<[^>]+>","",body),parse_mode=None)
+        try: api.answer_callback(cid,"已发送预览")
+        except Exception: pass
+        return
+    if data.startswith("quick:editreply:"):
+        try: rid=int(data.rsplit(":",1)[1]); record=quick_get(owner_id,rid)
+        except Exception: record=None; rid=0
+        if not record: edit(_ui_notice("unknown","快捷消息不存在"),_v21_quick_keyboard(owner_id)); return
+        wait_set(owner_id,"quick_edit_reply_only",{"record_id":rid}); edit(_ui_title("messages","修改快捷消息文本","⚡")+"\n\n发送新的回复正文（1-3000 字，支持 HTML 富文本）。\n发送 <code>/cancel</code> 取消。", {"inline_keyboard":[[button("取消",f"quick:view:{rid}",icon_custom_emoji_id=premium_icon("back"))]]}); return
+    if data.startswith("quick:editkw:"):
+        try: rid=int(data.rsplit(":",1)[1]); record=quick_get(owner_id,rid)
+        except Exception: record=None; rid=0
+        if not record: edit(_ui_notice("unknown","快捷消息不存在"),_v21_quick_keyboard(owner_id)); return
+        wait_set(owner_id,"quick_edit_keywords",{"record_id":rid}); edit("\n".join([_ui_title("messages","修改快捷消息触发词","⚡"),"",_ui_field("当前关键词",html.escape(" / ".join(record.get("keywords") or [])),trusted=True),"发送新的触发关键词；多个关键词可用逗号或换行分隔。","发送 <code>/cancel</code> 取消。"]), {"inline_keyboard":[[button("取消",f"quick:view:{rid}",icon_custom_emoji_id=premium_icon("back"))]]}); return
+    if data.startswith("quick:toggledel:"):
+        try:
+            rid = int(data.rsplit(":", 1)[1]); record = quick_get(owner_id, rid)
+            if record:
+                quick_set_delete_trigger(owner_id, rid, not bool(int(record.get("delete_trigger") or 0)))
+            record = quick_get(owner_id, rid)
+        except Exception:
+            record = None
+        edit(_v21_quick_detail_text(record), _v21_quick_detail_keyboard(record) if record else _v21_quick_keyboard(owner_id)); return
+    if data.startswith("quick:edit:"):
+        try: rid=int(data.rsplit(":",1)[1]); record=quick_get(owner_id,rid)
+        except Exception: record=None; rid=0
+        if not record: edit(_ui_notice("unknown","快捷消息不存在"),_v21_quick_keyboard(owner_id)); return
+        wait_set(owner_id,"quick_edit_keywords",{"record_id":rid}); edit("\n".join([_ui_title("messages","修改快捷消息触发词","⚡"),"",_ui_field("当前关键词",html.escape(" / ".join(record.get("keywords") or [])),trusted=True),"发送新的触发关键词；多个关键词可用逗号或换行分隔。","发送 <code>/cancel</code> 取消。"]), {"inline_keyboard":[[button("取消",f"quick:view:{rid}",icon_custom_emoji_id=premium_icon("back"))]]}); return
+    if data.startswith("quick:delask:"):
+        try:
+            rid = int(data.rsplit(":", 1)[1]); record = quick_get(owner_id, rid)
+        except Exception:
+            record = None; rid = 0
+        if not record:
+            edit(_ui_notice("unknown", "快捷消息不存在"), _v21_quick_keyboard(owner_id)); return
+        edit(_ui_title("messages", "确认删除快捷消息", "⚡") + "\n\n删除后无法恢复。", {"inline_keyboard": [[button("确认删除", f"quick:delete:{rid}", icon_custom_emoji_id=premium_icon("delete"), style="danger")], [button("取消", f"quick:view:{rid}", icon_custom_emoji_id=premium_icon("back"), style="primary")]]}); return
+    if data.startswith("quick:delete:"):
+        try:
+            quick_delete(owner_id, int(data.rsplit(":", 1)[1]))
+        except Exception:
+            pass
+        edit(_v21_quick_text(owner_id), _v21_quick_keyboard(owner_id)); return
+    if data == "menu:offline":
+        edit(_v21_offline_text(owner_id), _v21_offline_keyboard(owner_id)); return
+    if data == "offline:toggle":
+        st = offline_get(owner_id); offline_save(owner_id, enabled=not bool(int(st.get("enabled") or 0)))
+        edit(_v21_offline_text(owner_id), _v21_offline_keyboard(owner_id)); return
+    if data == "offline:toggle_skip_online":
+        st=offline_get(owner_id); offline_save(owner_id,skip_when_online=not bool(int(st.get("skip_when_online",1) or 0)))
+        edit(_v21_offline_text(owner_id),_v21_offline_keyboard(owner_id)); return
+    if data == "offline:preview":
+        st=offline_get(owner_id); body=str(st.get("template_text") or "")[:3500]
+        try: api.send_message(owner_id,body,parse_mode="HTML")
+        except Exception: api.send_message(owner_id,re.sub(r"<[^>]+>","",body),parse_mode=None)
+        try: api.answer_callback(cid,"已发送预览")
+        except Exception: pass
+        return
+    if data == "offline:interval_menu":
+        edit(_ui_title("messages", "修改离线消息间隔", "📴") + "\n\n选择同一客户的最短触发间隔。", _v21_offline_interval_keyboard(owner_id)); return
+    if data == "offline:template":
+        wait_set(owner_id, "offline_template")
+        edit("\n".join([_ui_title("messages", "修改离线消息", "📴"), "", _ui_field("输入内容", "直接发送新的离线消息模板（1-3500 字）"), _ui_field("取消", "发送 /cancel")]), {"inline_keyboard": [[button("取消", "offline:cancel", icon_custom_emoji_id=premium_icon("back"))]]}); return
+    if data == "offline:cancel":
+        wait_clear(owner_id); edit(_v21_offline_text(owner_id), _v21_offline_keyboard(owner_id)); return
+    if data.startswith("offline:interval:"):
+        try:
+            seconds = int(data.rsplit(":", 1)[1]); offline_save(owner_id, interval_seconds=seconds)
+        except Exception:
+            pass
+        edit(_v21_offline_text(owner_id), _v21_offline_keyboard(owner_id)); return
+    if data == "menu:sync":
+        edit(sync_menu_text(owner_id), sync_keyboard(owner_id)); return
+    if data == "sync:toggle":
+        set_sync_enabled(owner_id, not sync_enabled(owner_id)); edit(sync_menu_text(owner_id), sync_keyboard(owner_id)); return
+    if data == "sync:preview":
+        text = "\n".join([
+            _ui_title("preview", "同步预览", "🔍"), "",
+            _ui_field("同步范围", "仅同步个人账本"),
+            _ui_field("同步方式", "手动同步一次"),
+            "",
+            "确认后会同步一次个人账本。",
+        ])
+        edit(text, {"inline_keyboard": [[button("同步一次", "sync:confirm", icon_custom_emoji_id=premium_icon("sync"))], [button("返回", "menu:sync", icon_custom_emoji_id=premium_icon("back"))]]}); return
+    if data == "sync:confirm":
+        if not sync_enabled(owner_id):
+            edit(sync_menu_text(owner_id), sync_keyboard(owner_id)); return
+        _head = premium_notice_banner("unknown", "确认同步个人账本")
+        edit("\n".join([_head, "", _ui_field("同步范围", "仅同步个人账本"), "", "确认后同步一次。", _head]), {"inline_keyboard": [[button("确认同步一次", "sync:run", icon_custom_emoji_id=premium_icon("sync"))], [button("取消", "menu:sync", icon_custom_emoji_id=premium_icon("back"))]]}); return
+    if data == "sync:run":
+        try:
+            result = sync_once(owner_id)
+            added = int(result.get("new_from_main") or 0) + int(result.get("new_from_water") or 0)
+            total = int(result.get("merged_total") or 0)
+            _head = premium_notice_banner("safe", "个人账本同步完成")
+            text = "\n".join([
+                _head, "",
+                _ui_field("新增记录", f"{added} 条"),
+                _ui_field("当前个人账本", f"{total} 条"),
+                "", _head,
+            ])
+        except SyncDisabled:
+            text = _ui_notice("unknown", "账本同步已关闭")
+        except MainLedgerUnavailable:
+            text = _ui_notice("unknown", "账本暂不可用", "请稍后重试。")
+        except Exception:
+            text = _ui_notice("unknown", "同步失败", "请稍后重试。")
+        edit(text, sync_keyboard(owner_id)); return
+    if data == "menu:crypto":
+        edit("\n".join([_ui_title("crypto", "链上工具", "⛓"), "", _ui_field("TRON / USDT", "发送 /usdt TRON地址"), _ui_field("TON", "发送 /ton TON地址或域名"), "", "链上查询只读，不会发起转账、授权或签名。"]), {"inline_keyboard": [[button("实时汇率", "tool:rate", icon_custom_emoji_id=premium_icon("rate"))], [_v21_back_home()]]}); return
+    if data == "tool:rate":
+        edit(_tool_result_html(exchange_rate_text(), "finance"), {"inline_keyboard": [[button("刷新", "tool:rate", icon_custom_emoji_id=premium_icon("refresh")), _v21_back_home()]]}); return
+    if data == "tool:calc":
+        wait_set(owner_id, "calculator", {})
+        edit("\n".join([_ui_title("tools", "计算器", "🧮"), "", _ui_field("当前模式", "私聊计算器"), "直接发送算式即可：", "<code>1-1+1*2</code>", "<code>（2+3）*4</code>", "<code>10÷2</code>", "<code>2^3</code>", "", "发送 <code>/cancel</code> 退出计算器。"]), {"inline_keyboard": [[_v21_back_home()]]}); return
+    if data == "menu:kw":
+        edit(keyword_menu_text(owner_id), _keyword_menu_keyboard(owner_id)); return
+    if data == "kw:add":
+        wait_set(owner_id,"kw_new_keyword",{}); edit(_ui_title("keyword","设置关键词","💎")+"\n\n发送关键词（1-64 字）。\n发送 <code>/cancel</code> 取消。", {"inline_keyboard":[[button("取消","menu:kw",icon_custom_emoji_id=premium_icon("back"))]]}); return
+    if data == "kw:list":
+        rows=_keyword_list(owner_id); edit(_ui_title("keyword","查看关键词","💎")+"\n\n"+(f"当前共有 <b>{len(rows)}</b> 条，点击下方关键词查看详情。" if rows else "暂无关键词回复。"),_keyword_list_keyboard(owner_id,"view")); return
+    if data == "kw:choose_edit":
+        rows=_keyword_list(owner_id); edit(_ui_title("keyword","更改关键词","💎")+"\n\n"+("选择要管理的关键词。" if rows else "暂无关键词回复。"),_keyword_list_keyboard(owner_id,"edit")); return
+    if data == "kw:choose_delete":
+        rows=_keyword_list(owner_id); edit(_ui_title("keyword","删除关键词","💎")+"\n\n"+("选择要删除的关键词。" if rows else "暂无关键词回复。"),_keyword_list_keyboard(owner_id,"delete")); return
+    if data.startswith("kw:view:"):
+        try: rid=int(data.rsplit(":",1)[1]); item=_keyword_get(owner_id,rid)
+        except Exception: item=None
+        edit(_keyword_detail_text(item),_keyword_detail_keyboard(item) if item else _keyword_menu_keyboard(owner_id)); return
+    if data.startswith("kw:preview:"):
+        try: rid=int(data.rsplit(":",1)[1]); item=_keyword_get(owner_id,rid)
+        except Exception: item=None
+        if not item: edit(_ui_notice("unknown","关键词不存在或已删除"),_keyword_menu_keyboard(owner_id)); return
+        body=str(item.get("reply_text") or "")[:3500]
+        try: api.send_message(owner_id,body,parse_mode="HTML")
+        except Exception: api.send_message(owner_id,re.sub(r"<[^>]+>","",body),parse_mode=None)
+        try: api.answer_callback(cid,"已发送预览")
+        except Exception: pass
+        return
+    if data.startswith("kw:editreply:"):
+        try: rid=int(data.rsplit(":",1)[1]); item=_keyword_get(owner_id,rid)
+        except Exception: item=None; rid=0
+        if not item: edit(_ui_notice("unknown","关键词不存在或已删除"),_keyword_menu_keyboard(owner_id)); return
+        wait_set(owner_id,"kw_edit_reply",{"record_id":rid}); edit(_ui_title("keyword","修改回复","💎")+"\n\n发送新的回复正文（1-3500 字，支持 HTML 富文本）。\n发送 <code>/cancel</code> 取消。", {"inline_keyboard":[[button("取消",f"kw:view:{rid}",icon_custom_emoji_id=premium_icon("back"))]]}); return
+    if data.startswith("kw:editkw:"):
+        try: rid=int(data.rsplit(":",1)[1]); item=_keyword_get(owner_id,rid)
+        except Exception: item=None; rid=0
+        if not item: edit(_ui_notice("unknown","关键词不存在或已删除"),_keyword_menu_keyboard(owner_id)); return
+        wait_set(owner_id,"kw_edit_keyword",{"record_id":rid}); edit(_ui_title("keyword","修改关键词","💎")+f"\n\n当前关键词：<code>{html.escape(str(item.get('keyword') or ''))}</code>\n\n发送新的关键词（1-64 字）。\n发送 <code>/cancel</code> 取消。", {"inline_keyboard":[[button("取消",f"kw:view:{rid}",icon_custom_emoji_id=premium_icon("back"))]]}); return
+    if data.startswith("kw:delask:"):
+        try: rid=int(data.rsplit(":",1)[1]); item=_keyword_get(owner_id,rid)
+        except Exception: item=None; rid=0
+        if not item: edit(_ui_notice("unknown","关键词不存在或已删除"),_keyword_menu_keyboard(owner_id)); return
+        edit(_ui_title("keyword","确认删除关键词","💎")+f"\n\n关键词：<code>{html.escape(str(item.get('keyword') or ''))}</code>\n\n删除后无法恢复。", {"inline_keyboard":[[button("确认删除",f"kw:delete:{rid}",icon_custom_emoji_id=premium_icon("delete"),style="danger")],[button("取消",f"kw:view:{rid}",icon_custom_emoji_id=premium_icon("back"),style="primary")]]}); return
+    if data.startswith("kw:delete:"):
+        try: _keyword_delete_id(owner_id,int(data.rsplit(":",1)[1]))
+        except Exception: pass
+        edit(keyword_menu_text(owner_id),_keyword_menu_keyboard(owner_id)); return
+    if data == "menu:archive":
+        edit(protection_text(owner_id), protection_keyboard(owner_id)); return
+    if data == "protection:toggle":
+        enabled = _protection_enabled(owner_id); set_protection_enabled(owner_id, not enabled)
+        edit(protection_text(owner_id), protection_keyboard(owner_id)); return
+    if data == "menu:settings":
+        edit(settings_text(owner_id), settings_keyboard(owner_id)); return
+    if data.startswith("setv2:cat:"):
+        cat=data.rsplit(":",1)[1]
+        if cat in {"common","message","security","ledger"}: edit(settings_category_text(owner_id,cat),settings_category_keyboard(owner_id,cat)); return
+    if data.startswith("setv2:toggle:"):
+        parts=data.split(":"); key=parts[2] if len(parts)>2 else ""; cat=parts[3] if len(parts)>3 else "common"
+        if key=="protection": set_protection_enabled(owner_id,not _protection_enabled(owner_id))
+        elif key in {"item_ledger_enabled","scam_detect_enabled","fakebot_detect_enabled","keyword_enabled"}:
+            st=get_settings(owner_id); set_setting(owner_id,key,0 if int(st.get(key,0) or 0) else 1)
+        edit(settings_category_text(owner_id,cat),settings_category_keyboard(owner_id,cat)); return
+    if data.startswith("settings:toggle:"):
+        key=data.rsplit(":",1)[1]; st=get_settings(owner_id)
+        if key in {"item_ledger_enabled","scam_detect_enabled","fakebot_detect_enabled","keyword_enabled"}: set_setting(owner_id,key,0 if int(st.get(key,0) or 0) else 1)
+        edit(settings_text(owner_id),settings_keyboard(owner_id)); return
+    if data == "settings:currency":
+        rows=[]; cur=[]; current=ledger_currency(owner_id).upper()
+        for c in ALLOWED_CURRENCIES:
+            cur.append(button(c,f"currency:{c}",selected=(c.upper()==current),icon_custom_emoji_id=premium_currency_icon(c)))
+            if len(cur)==3: rows.append(cur); cur=[]
+        if cur: rows.append(cur)
+        rows.append([button("返回设置","menu:settings",icon_custom_emoji_id=premium_icon("back"))])
+        edit("\n".join([_ui_title("finance","记账单位","💎"),"",_ui_field("当前单位",current),"","选择下方单位即可立即生效。"]),{"inline_keyboard":rows}); return
+    if data.startswith("currency:"):
+        try: set_currency(owner_id,data.split(":",1)[1])
+        except Exception: pass
+        edit(settings_text(owner_id),settings_keyboard(owner_id)); return
+
+
+def _v21_business_connection_notice(api: TelegramAPI, bc: dict) -> None:
+    owner = bc.get("user") or {}
+    change = business_connection_upsert(
+        str(bc.get("id") or ""), owner, bool(bc.get("is_enabled", True)), int(bc.get("user_chat_id") or 0),
+    )
+    if change.get("conflict"):
+        print(f"[ShuiBei] blocked Business owner conflict for connection {str(bc.get('id') or '')[:32]}", flush=True)
+        return
+    if not change.get("changed"):
+        return
+    target = int(change.get("user_chat_id") or change.get("owner_id") or 0)
+    if target <= 0:
+        return
+    if change.get("enabled"):
+        header = premium_notice_banner("safe", "Business 自动化机器人已连接")
+        text = "\n".join([
+            header, "",
+            _ui_field("机器人", "水杯记账"),
+            _ui_field("已启用能力", "墨清反诈、FakeBot 检测、关键词回复、快捷消息、离线消息、防撤回 / 防编辑"),
+            _ui_field("账本同步", "可在财务页手动同步个人账本"),
+            "", header,
+        ])
+    else:
+        header = premium_notice_banner("unknown", "Business 自动化机器人已取消")
+        text = "\n".join([
+            header, "",
+            _ui_field("已暂停能力", "自动反诈、关键词回复、离线消息和 Business 消息保护"),
+            "", "个人记账等非 Business 功能仍可继续使用。",
+            "重新连接水杯记账后可继续使用 Business 自动化能力。", header,
+        ])
+    try:
+        api.send_message(target, text)
+    except Exception:
+        pass
+
+
+def process_update(api: TelegramAPI, upd: dict) -> None:
+    if not isinstance(upd, dict):
+        return
+    if isinstance(upd.get("business_connection"), dict):
+        _v21_business_connection_notice(api, upd["business_connection"]); return
+    if isinstance(upd.get("deleted_business_messages"), dict):
+        deleted = upd["deleted_business_messages"]
+        if bool(deleted.get("_shuibei_protection_allowed", True)):
+            handle_deleted_business_messages(api, deleted)
+        return
+    if isinstance(upd.get("edited_business_message"), dict):
+        edited = upd["edited_business_message"]
+        if bool(edited.get("_shuibei_protection_allowed", True)):
+            handle_edited_business_message(api, edited)
+        return
+    if isinstance(upd.get("business_message"), dict):
+        _business_message(api, upd["business_message"]); return
+    if isinstance(upd.get("callback_query"), dict):
+        _callback(api, upd["callback_query"]); return
+    if isinstance(upd.get("message"), dict):
+        _private_command(api, upd["message"]); return
+
+
+def run() -> None:
+    _runtime_clear_ready()
+    _runtime_status("initializing_databases", detail="starting local schema checks")
+    try:
+        init_all()
+        ensure_feature_schema()
+        bootstrap_customer_index()
+    except Exception as exc:
+        _runtime_status("database_init_failed", detail=f"{type(exc).__name__}: {str(exc)[:300]}")
+        raise
+
+    _runtime_status("telegram_getme", detail="verifying bot identity")
+    api = TelegramAPI()
+    try:
+        me = api.get_me() or {}
+    except Exception as exc:
+        _runtime_status("telegram_getme_failed", detail=f"{type(exc).__name__}: {str(exc)[:300]}")
+        raise
+    bot_id = int(me.get("id") or 0)
+    actual_username = str(me.get("username") or "").strip()
+    username = "@" + actual_username if actual_username else ""
+    expected_username = str(BOT_USERNAME or "").strip().lstrip("@").lower()
+    if expected_username and actual_username.lower() != expected_username:
+        detail = f"Bot identity mismatch: expected @{expected_username}, got @{actual_username or '<none>'} bot_id={bot_id}"
+        _runtime_status("bot_identity_mismatch", bot_id=bot_id, username=username, detail=detail)
+        print(f"[ShuiBei] {detail}", flush=True)
+        raise SystemExit(78)
+    print(f"[ShuiBei] identity verified {username or BOT_USERNAME} bot_id={bot_id}", flush=True)
+
+    _runtime_status("webhook_check", bot_id=bot_id, username=username)
+    try:
+        wh = api.get_webhook_info() or {}
+        if str(wh.get("url") or "").strip():
+            api.delete_webhook(drop_pending_updates=False)
+            print("[ShuiBei] removed stale webhook; long polling enabled", flush=True)
+    except TelegramAPIError as exc:
+        _runtime_status("webhook_check_failed", bot_id=bot_id, username=username, detail=str(exc)[:300])
+        print(f"[ShuiBei] webhook check warning: {exc}", flush=True)
+
+    offset = load_offset(bot_id)
+    try:
+        save_offset(offset, bot_id)
+    except Exception as exc:
+        print(f"[ShuiBei] offset save warning: {type(exc).__name__}", flush=True)
+    allowed = list(ALLOWED_UPDATE_TYPES)
+
+    # Real readiness probe. The manager must not call this process healthy before getUpdates itself succeeds.
+    _runtime_status("poll_probe", bot_id=bot_id, username=username, detail=f"offset={offset}")
+    try:
+        api.get_updates(offset, 0, allowed, limit=1)
+    except TelegramAPIError as exc:
+        if _is_poll_conflict(exc):
+            _runtime_status(
+                "poll_conflict",
+                bot_id=bot_id,
+                username=username,
+                detail="another ShuiBei/getUpdates consumer is already using this bot token",
+            )
+            print("[ShuiBei] getUpdates conflict: another bot instance is already consuming updates", flush=True)
+        else:
+            _runtime_status("poll_probe_failed", bot_id=bot_id, username=username, detail=f"TelegramAPIError: {str(exc)[:300]}")
+        raise
+    except Exception as exc:
+        _runtime_status("poll_probe_failed", bot_id=bot_id, username=username, detail=f"{type(exc).__name__}: {str(exc)[:300]}")
+        raise
+    _runtime_status("ready", bot_id=bot_id, username=username, detail=f"offset={offset}", ready=True)
+    print(f"[ShuiBei] READY {username or BOT_USERNAME} bot_id={bot_id} offset={offset}", flush=True)
+
+    start_failures = {}
+    last_heartbeat = 0.0
+    poll_conflict_active = False
+    while True:
+        try:
+            updates = api.get_updates(offset, POLL_TIMEOUT, allowed)
+            updates = apply_access_control(api, updates)
+            now_mono = time.monotonic()
+            if poll_conflict_active:
+                poll_conflict_active = False
+                _runtime_status("ready", bot_id=bot_id, username=username, detail=f"offset={offset}; poll conflict recovered", ready=True)
+                last_heartbeat = now_mono
+                print("[ShuiBei] getUpdates conflict recovered; polling is active again", flush=True)
+            elif now_mono - last_heartbeat >= 15.0:
+                _runtime_status("ready", bot_id=bot_id, username=username, detail=f"offset={offset}", ready=True)
+                last_heartbeat = now_mono
+            for upd in updates:
+                uid = int(upd.get("update_id") or 0)
+                is_start = _is_start_update(upd)
+                processed_ok = False
+                try:
+                    process_update(api, upd)
+                    processed_ok = True
+                    start_failures.pop(uid, None)
+                except Exception as exc:
+                    print(f"[ShuiBei] internal error: {type(exc).__name__}", flush=True)
+                    if is_start:
+                        n = int(start_failures.get(uid, 0)) + 1
+                        start_failures[uid] = n
+                        _runtime_status("start_handler_failed", bot_id=bot_id, username=username, detail=f"update_id={uid} attempt={n} {type(exc).__name__}: {str(exc)[:220]}")
+                        # A /start response is safe to retry. Do not acknowledge it on the first two failures.
+                        if n < 3:
+                            print(f"[ShuiBei] /start update {uid} failed attempt={n}; keeping offset for retry", flush=True)
+                            time.sleep(1.0)
+                            break
+                        print(f"[ShuiBei] /start update {uid} failed 3 times; advancing to avoid poison queue", flush=True)
+                    else:
+                        _runtime_status("update_handler_failed", bot_id=bot_id, username=username, detail=f"update_id={uid} {type(exc).__name__}: {str(exc)[:220]}")
+                # Old behavior for non-/start remains at-most-once; /start advances only after success or bounded retries.
+                if processed_ok or not is_start or int(start_failures.get(uid, 0)) >= 3:
+                    offset = max(offset, uid + 1)
+                    save_offset(offset, bot_id)
+                else:
+                    break
+        except KeyboardInterrupt:
+            raise
+        except TelegramAPIError as exc:
+            if _is_poll_conflict(exc):
+                poll_conflict_active = True
+                _runtime_status(
+                    "poll_conflict",
+                    bot_id=bot_id,
+                    username=username,
+                    detail="another ShuiBei/getUpdates consumer is already using this bot token",
+                )
+                print("[ShuiBei] getUpdates conflict: another bot instance is consuming updates", flush=True)
+            else:
+                _runtime_status("poll_api_error", bot_id=bot_id, username=username, detail=str(exc)[:300])
+                print(f"[ShuiBei] Telegram API error: {exc}", flush=True)
+            time.sleep(POLL_RETRY_SECONDS)
+        except Exception as exc:
+            _runtime_status("poll_error", bot_id=bot_id, username=username, detail=f"{type(exc).__name__}: {str(exc)[:300]}")
+            print(f"[ShuiBei] internal error: {type(exc).__name__}", flush=True)
+            time.sleep(POLL_RETRY_SECONDS)
+
+# ================== v21：水杯记账统一体验层结束 ==================
+
+# ================== r29：轻量商户客户账本 / 客户中心 ==================
+# 2026-09-16。账本金额仍只以 ledger.db 为真值；本层只增加客户索引、轻量 CRM 与 UI。
+from customers import (
+    touch_business_customer, list_customers, customer_detail, set_customer_meta,
+    mark_collection_reminded, merchant_summary, bootstrap_customer_index,
+)
+from features import (
+    welcome_get, welcome_save, welcome_claim, welcome_commit, welcome_release, welcome_render,
+)
+from ledger import get_balance as _r29_get_balance, micro_to_str as _r29_micro_to_str
+
+_SHUIBEI_RUNTIME_BUILD = "r30-20260918-membership-privacy"
+
+
+def _r29_money(owner_id: int, amount_micro: int) -> str:
+    return f"{_r29_micro_to_str(int(amount_micro or 0))}{ledger_currency(int(owner_id))}"
+
+
+def _r29_time(ts: int) -> str:
+    if int(ts or 0) <= 0:
+        return "暂无记录"
+    try:
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(int(ts)))
+    except Exception:
+        return "暂无记录"
+
+
+def _r29_home_text(owner_id: int) -> str:
+    try:
+        sm = merchant_summary(int(owner_id))
+    except Exception:
+        sm = {"customer_count":0,"debt_count":0,"debt_amount_micro":0,"prepay_count":0,"prepay_amount_micro":0,"recent_count":0}
+    return "\n".join([
+        _ui_title("home", "水杯记账", "🥤"), "",
+        _ui_field("待收", f"{_r29_money(owner_id, int(sm.get('debt_amount_micro') or 0))} · {int(sm.get('debt_count') or 0)} 位"),
+        _ui_field("预付款", f"{_r29_money(owner_id, int(sm.get('prepay_amount_micro') or 0))} · {int(sm.get('prepay_count') or 0)} 位"),
+        _ui_field("客户", f"{int(sm.get('customer_count') or 0)} 位 · 近 7 天活跃 {int(sm.get('recent_count') or 0)} 位"),
+    ])
+
+
+def _plain_home_keyboard() -> dict:
+    return {"inline_keyboard": [
+        [
+            {"text":"首页","callback_data":"menu:home"},
+            {"text":"客户","callback_data":"menu:section:customers"},
+            {"text":"财务","callback_data":"menu:section:finance"},
+            {"text":"消息","callback_data":"menu:section:msg"},
+        ],
+        [{"text":"客户中心","callback_data":"menu:section:customers"},{"text":"记账","callback_data":"menu:ledger"}],
+        [{"text":"快捷消息","callback_data":"menu:quick"},{"text":"设置","callback_data":"menu:settings"}],
+    ]}
+
+
+def _v21_panel_tabs(active: str):
+    tabs = [
+        ("home", "首页", "menu:home", "home"),
+        ("customers", "客户", "menu:section:customers", "user"),
+        ("finance", "财务", "menu:section:finance", "finance"),
+        ("msg", "消息", "menu:section:msg", "messages"),
+    ]
+    return [button(t, d, selected=(k == active), icon_custom_emoji_id=premium_icon(i)) for k, t, d, i in tabs]
+
+
+def _v21_panel_items(owner_id: int, active: str):
+    st = get_settings(owner_id)
+    protect_on = bool(int(st.get("anti_revoke_enabled", 0) or 0) and int(st.get("anti_edit_enabled", 0) or 0))
+    sync_on = bool(int(st.get("sync_enabled", 0) or 0))
+    offline_on = bool(int(offline_get(owner_id).get("enabled") or 0))
+    welcome_on = bool(int(welcome_get(owner_id).get("enabled") or 0))
+    if active == "customers":
+        return [
+            [button("全部客户", "customer:list:all", icon_custom_emoji_id=premium_icon("user"), style="primary"),
+             button("欠款客户", "customer:list:debt", icon_custom_emoji_id=premium_icon("finance"), style="danger")],
+            [button("预付款客户", "customer:list:prepay", icon_custom_emoji_id=premium_icon("finance"), style="success"),
+             button("最近活跃", "customer:list:recent", icon_custom_emoji_id=premium_icon("refresh"), style="primary")],
+            [button("久未联系", "customer:list:inactive", icon_custom_emoji_id=premium_icon("notification"), style="primary")],
         ]
     if active == "finance":
         return [
@@ -1265,6 +1791,7 @@ def _r29_customer_list_keyboard(owner_id: int, mode: str):
     rows=[]
     for r in list_customers(owner_id,mode,limit=20):
         pid=int(r.get("peer_id") or 0); bal=int(r.get("balance_micro") or 0)
+
         suffix=("欠 "+_r29_money(owner_id,abs(bal))) if bal<0 else (("预付 "+_r29_money(owner_id,bal)) if bal>0 else "已结清")
         rows.append([button(f"{str(r.get('name') or '客户')[:28]} · {suffix}",f"customer:detail:{pid}",icon_custom_emoji_id=premium_icon("user"),style=("danger" if bal<0 else "primary"))])
     rows.append([button("返回客户中心","menu:section:customers",icon_custom_emoji_id=premium_icon("back"),style="primary")])
