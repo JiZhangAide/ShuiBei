@@ -87,3 +87,13 @@ def test_public_tree_has_no_runtime_data_files():
         rel = path.relative_to(ROOT)
         assert not name.endswith(FORBIDDEN_RUNTIME_SUFFIXES), f"runtime data file committed: {rel}"
         assert not name.endswith(("-wal", "-shm", "-journal")), f"SQLite sidecar committed: {rel}"
+
+
+def test_only_documented_public_developer_routes_are_exposed():
+    config_text = (ROOT / "audit_source" / "config.py").read_text(encoding="utf-8")
+    assert 'DEVELOPER_API_BASE = "https://api.jizhang.org"' in config_text
+    routes = set(re.findall(r'"/api/v1/[^"]+"', config_text))
+    assert routes == {
+        '"/api/v1/fanzha/records"',
+        '"/api/v1/fakebot/check"',
+    }
