@@ -4,6 +4,7 @@ from __future__ import annotations
 import html
 import hashlib
 import json
+import threading
 import time
 from datetime import datetime
 from functools import wraps
@@ -34,8 +35,12 @@ from advanced_ledger import (
     create_close_snapshot,
     create_recurring_receivable,
     create_template,
+    current_goal,
+    customer_profile_map,
     customer_summary,
     customer_timeline,
+    drain_projection_outbox,
+    enqueue_projection_event,
     entry_meta_map,
     list_books,
     list_close_snapshots,
@@ -43,7 +48,9 @@ from advanced_ledger import (
     list_templates,
     process_due_recurring,
     reverse_entry,
+    set_customer_profile,
     set_entry_meta,
+    set_goal,
     set_recurring_active,
     trend_series,
 )
@@ -57,6 +64,54 @@ def _ok(data=None, status=200):
 
 def _fail(message: str, status: int = 400):
     return jsonify({"ok": False, "error": {"message": str(message)[:300]}}), status
+
+
+_RATE_LIMITS = {
+    "read": 120,
+    "write": 60,
+    "financial": 30,
+    "batch": 10,
+}
+_RATE_LIMIT_LOCK = threading.Lock()
+_RATE_LIMIT_STATE: dict[tuple[int, str, int], int] = {}
+
+
+def _rate_bucket(*, financial: bool = False) -> str:
+    path = str(request.path or "")
+    if "/batch/" in path or path.endswith("/recurring/process"):
+        return "batch"
+    if financial:
+        return "financial"
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return "read"
+    return "write"
+
+
+def _consume_rate_limit(user_id: int, bucket: str) -> tuple[bool, int]:
+    now = int(time.time())
+    window = now // 60
+    limit = int(_RATE_LIMITS.get(str(bucket), 60))
+    key = (int(user_id), str(bucket), window)
+    with _RATE_LIMIT_LOCK:
+        # Bound memory even under many distinct users.
+        if len(_RATE_LIMIT_STATE) > 10000:
+            stale = [k for k in _RATE_LIMIT_STATE if int(k[2]) < window - 1]
+            for k in stale[:5000]:
+                _RATE_LIMIT_STATE.pop(k, None)
+        count = int(_RATE_LIMIT_STATE.get(key, 0)) + 1
+        _RATE_LIMIT_STATE[key] = count
+    return count <= limit, max(1, 60 - (now % 60))
+
+
+def _rate_limit_guard(user_id: int, *, financial: bool = False):
+    bucket = _rate_bucket(financial=financial)
+    allowed, retry_after = _consume_rate_limit(int(user_id), bucket)
+    if allowed:
+        return None
+    response = jsonify({"ok": False, "error": {"message": "请求过于频繁，请稍后重试"}})
+    response.status_code = 429
+    response.headers["Retry-After"] = str(retry_after)
+    return response
 
 
 def _auth_from_request(*, max_age_seconds: int = 1800):
@@ -77,6 +132,9 @@ def _auth_required(fn):
             g.shuibei_auth = _auth_from_request(max_age_seconds=1800)
         except Exception:
             return _fail("Mini App 授权已失效，请从水杯记账重新打开", 401)
+        limited = _rate_limit_guard(int(g.shuibei_auth.user_id), financial=False)
+        if limited is not None:
+            return limited
         return fn(*args, **kwargs)
     return wrapped
 
@@ -89,17 +147,24 @@ def _financial_auth_required(fn):
             g.shuibei_auth = _auth_from_request(max_age_seconds=600)
         except Exception:
             return _fail("Mini App 授权已失效，请从水杯记账重新打开", 401)
+        limited = _rate_limit_guard(int(g.shuibei_auth.user_id), financial=True)
+        if limited is not None:
+            return limited
         return fn(*args, **kwargs)
     return wrapped
 
 
-def _customer_row(owner_id: int, row: dict) -> dict:
+def _customer_row(owner_id: int, row: dict, profile: dict | None = None) -> dict:
     d = decorate_customer(owner_id, row)
+    profile = profile or {}
     bal = int(d.get("balance_micro") or 0)
     return {
         "peer_id": int(d.get("peer_id") or 0),
-        "name": str(d.get("name") or "客户"),
+        "name": str(profile.get("alias") or d.get("name") or "客户"),
+        "telegram_name": str(d.get("name") or "客户"),
         "username": str(d.get("username") or ""),
+        "alias": str(profile.get("alias") or ""),
+        "pinned": bool(profile.get("pinned")),
         "balance_micro": bal,
         "amount_due_micro": abs(bal) if bal < 0 else 0,
         "prepaid_micro": bal if bal > 0 else 0,
@@ -173,6 +238,9 @@ def _miniapp_add_ledger(
     category: str = "",
     cost_micro: int = 0,
     book_id: int = 0,
+    status: str = "posted",
+    source_message_id: int = 0,
+    attachment_ref: str = "",
 ) -> dict:
     amount = int(amount_micro or 0)
     if amount <= 0 or amount > 10**15:
@@ -183,6 +251,9 @@ def _miniapp_add_ledger(
     d = customer_detail(owner_id, peer_id)
     if not d:
         raise ValueError("客户不存在")
+    bid = int(book_id or 0)
+    if bid not in {int(x.get("id") or 0) for x in list_books(int(owner_id))}:
+        raise ValueError("项目账不存在")
     key = str(idem_key or "").strip()
     if len(key) < 8 or len(key) > 120:
         raise ValueError("请求标识无效")
@@ -195,7 +266,13 @@ def _miniapp_add_ledger(
         cat = ""
         cost = 0
 
-    canonical = [int(owner_id), int(peer_id), kind, amount, str(remark or "")[:500], cat, cost, int(book_id or 0)]
+    clean_status = str(status or "posted").strip().lower()
+    if clean_status not in {"posted", "invoiced", "partial", "settled", "waived"}:
+        raise ValueError("账目状态无效")
+    canonical = [
+        int(owner_id), int(peer_id), kind, amount, str(remark or "")[:500], cat, cost, bid,
+        clean_status, max(0, int(source_message_id or 0)), str(attachment_ref or "")[:500],
+    ]
     request_hash = hashlib.sha256(json.dumps(canonical, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
     _ensure_miniapp_ledger_schema()
     with tx(LEDGER_DB_PATH, immediate=True) as conn:
@@ -241,9 +318,30 @@ def _miniapp_add_ledger(
             "category": cat,
             "cost_micro": cost,
             "gross_profit_micro": (amount - cost) if kind == "debt" else 0,
-            "book_id": int(book_id or 0),
+            "book_id": bid,
+            "status": clean_status,
+            "source_message_id": max(0, int(source_message_id or 0)),
+            "attachment_ref": str(attachment_ref or "")[:500],
             "currency": currency(owner_id),
         }
+        enqueue_projection_event(
+            conn,
+            int(owner_id),
+            f"ledger:{int(result['id'])}:created",
+            "entry_created",
+            {
+                "ledger_id": int(result["id"]),
+                "peer_id": int(peer_id),
+                "kind": kind,
+                "amount_micro": amount,
+                "balance_before_micro": before,
+                "balance_after_micro": after,
+                "book_id": bid,
+                "status": clean_status,
+                "source_message_id": max(0, int(source_message_id or 0)),
+                "attachment_ref": str(attachment_ref or "")[:500],
+            },
+        )
         conn.execute(
             "INSERT INTO miniapp_idempotency(owner_id,idem_key,result_json,created_at,request_hash) VALUES(?,?,?,?,?)",
             (int(owner_id), key, json.dumps(result, ensure_ascii=False, separators=(",", ":")), int(time.time()), request_hash),
@@ -252,7 +350,10 @@ def _miniapp_add_ledger(
             "DELETE FROM miniapp_idempotency WHERE owner_id=? AND created_at<?",
             (int(owner_id), int(time.time()) - 7 * 86400),
         )
-    set_entry_meta(int(owner_id), int(result["id"]), book_id=int(book_id or 0), status="posted")
+    try:
+        drain_projection_outbox(int(owner_id), limit=50)
+    except Exception:
+        pass
     return result
 
 
@@ -365,6 +466,7 @@ def register_shuibei_miniapp(app, *, static_dir: str):
         overdue = due_customers(uid, "overdue", limit=50)
         today = due_customers(uid, "today", limit=50)
         recent = list_customers(uid, "all", limit=6)
+        recent_profiles = customer_profile_map(uid, [int(x.get("peer_id") or 0) for x in recent])
         return _ok({
             "customer_count": int(sm.get("customer_count") or 0),
             "receivable_micro": int(sm.get("debt_amount_micro") or 0),
@@ -376,7 +478,11 @@ def register_shuibei_miniapp(app, *, static_dir: str):
             "today_gross_profit_micro": int(day.get("gross_profit_micro") or 0),
             "today_classified_sale_count": int(day.get("classified_sale_count") or 0),
             "currency": currency(uid),
-            "recent_customers": [_customer_row(uid, x) for x in recent],
+            "goal": current_goal(uid),
+            "recent_customers": sorted(
+                [_customer_row(uid, x, recent_profiles.get(int(x.get("peer_id") or 0))) for x in recent],
+                key=lambda x: (not bool(x.get("pinned")), -int(x.get("last_contact_at") or 0)),
+            ),
         })
 
     @bp.route("/api/miniapp/v1/customers")
@@ -385,8 +491,9 @@ def register_shuibei_miniapp(app, *, static_dir: str):
         uid = int(g.shuibei_auth.user_id)
         mode = str(request.args.get("filter") or "all").lower()
         q = str(request.args.get("q") or "").strip().lower()[:80]
-        if mode in {"overdue", "today", "week", "due"}:
-            rows = due_customers(uid, mode, limit=500)
+        overdue_buckets = {"overdue_1_3", "overdue_4_7", "overdue_8_30", "overdue_30"}
+        if mode in {"overdue", "today", "week", "due"} or mode in overdue_buckets:
+            rows = due_customers(uid, "overdue" if mode in overdue_buckets else mode, limit=500)
         elif mode == "debt":
             rows = list_customers(uid, "debt", limit=500)
         elif mode == "prepay":
@@ -395,9 +502,31 @@ def register_shuibei_miniapp(app, *, static_dir: str):
             rows = list_customers(uid, "recent", limit=500)
         else:
             rows = list_customers(uid, "all", limit=500)
-        out = [_customer_row(uid, x) for x in rows]
+
+        profiles = customer_profile_map(uid, [int(x.get("peer_id") or 0) for x in rows])
+        out = [_customer_row(uid, x, profiles.get(int(x.get("peer_id") or 0))) for x in rows]
+        if mode in overdue_buckets:
+            now = int(time.time())
+            def overdue_days(item):
+                due = int(item.get("due_at") or 0)
+                return max(0, (now - due + 86399) // 86400) if due > 0 else 0
+            if mode == "overdue_1_3":
+                out = [x for x in out if 1 <= overdue_days(x) <= 3]
+            elif mode == "overdue_4_7":
+                out = [x for x in out if 4 <= overdue_days(x) <= 7]
+            elif mode == "overdue_8_30":
+                out = [x for x in out if 8 <= overdue_days(x) <= 30]
+            else:
+                out = [x for x in out if overdue_days(x) > 30]
         if q:
-            out = [x for x in out if q in x["name"].lower() or q in x["username"].lower() or q in x["label"].lower()]
+            out = [
+                x for x in out
+                if q in x["name"].lower()
+                or q in x["telegram_name"].lower()
+                or q in x["username"].lower()
+                or q in x["label"].lower()
+            ]
+        out.sort(key=lambda x: (not bool(x.get("pinned")), -int(x.get("last_contact_at") or 0)))
         return _ok(out[:200])
 
     @bp.route("/api/miniapp/v1/customers/<int:peer_id>")
@@ -407,7 +536,8 @@ def register_shuibei_miniapp(app, *, static_dir: str):
         d = customer_detail(uid, int(peer_id))
         if not d:
             return _fail("客户不存在", 404)
-        return _ok(_customer_row(uid, d))
+        profile = customer_profile_map(uid, [int(peer_id)]).get(int(peer_id))
+        return _ok(_customer_row(uid, d, profile))
 
     @bp.route("/api/miniapp/v1/customers/<int:peer_id>/ledger")
     @_auth_required
