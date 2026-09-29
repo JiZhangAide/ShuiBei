@@ -1,29 +1,54 @@
+import importlib
 import os
 import stat
+import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from test_receivables_r31 import reset_local_dbs
+ROOT = Path(__file__).resolve().parents[1]
+MODULE_ROOT = ROOT / "audit_source" if (ROOT / "audit_source").is_dir() else ROOT
+if str(MODULE_ROOT) not in sys.path:
+    sys.path.insert(0, str(MODULE_ROOT))
+
+os.environ.setdefault("SHUIBEI_DATA_DIR", f"/tmp/shuibei-tests-{os.getpid()}")
+
 import config
 import db
+import features
 import ledger
 import advanced_ledger
 import miniapp_api
 
+assert str(config.APP_DB_PATH).startswith("/tmp/shuibei-tests-"), "tests must never use production ShuiBei data"
+DBS = (config.APP_DB_PATH, config.LEDGER_DB_PATH, config.ARCHIVE_DB_PATH, config.SYNC_DB_PATH)
+
+
+def _reset():
+    for p in DBS:
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.unlink(str(p) + suffix)
+            except FileNotFoundError:
+                pass
+    db._SCHEMA_READY.clear()
+    features._FEATURE_SCHEMA_READY = False
+    db.init_all()
+    features.ensure_feature_schema()
+    advanced_ledger._SCHEMA_GENERATION = -1
+    importlib.reload(advanced_ledger)
+    miniapp_api._RATE_LIMIT_STATE.clear()
+
 
 def setup_function():
-    reset_local_dbs()
-    advanced_ledger._SCHEMA_GENERATION = -1
-    advanced_ledger.ensure_schema()
-    miniapp_api._RATE_LIMIT_STATE.clear()
+    _reset()
 
 
 def test_projection_outbox_survives_projection_failure_and_replays_once():
     owner, peer = 93001, 94001
     ledger.add_record(owner, peer, "Outbox", "出", 10000, -10000, "seed")
 
-    real_apply = advanced_ledger._apply_projection_event
     with patch.object(
         advanced_ledger,
         "_apply_projection_event",
@@ -85,7 +110,7 @@ def test_rate_limiter_returns_429_and_retry_after():
     app.testing = True
     miniapp_api.register_shuibei_miniapp(
         app,
-        static_dir=str(__import__("pathlib").Path(miniapp_api.__file__).resolve().parent / "miniapp_dist"),
+        static_dir=str(Path(miniapp_api.__file__).resolve().parent / "miniapp_dist"),
     )
 
     fake_auth = SimpleNamespace(
