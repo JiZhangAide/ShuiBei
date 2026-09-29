@@ -1,8 +1,18 @@
-# MoQing Capability Contract
+# MoQing Public API Contract
 
-本文件只描述字段语义，不公开生产网络路由。
+开源版使用用户自己的 `SHUIBEI_DEVELOPER_API_KEY` 调用公开 Developer API。
 
-- `antifraud.records`：请求 `query`，成功响应包含 `count` 与 `records`；不可用时客户端必须降级为 unknown/unavailable。
-- `fakebot.check`：请求 `username`，客户端消费 official/suspect/match/similarity/distance/score；不可用时 fail closed。
-- `runtime.entitlement`：请求产品名与源码指纹；响应需要授权状态、`ecosystem=moqing`、匹配指纹和未来过期时间。
-- `miniapp.launch`：由私有运行层返回 HTTPS 启动地址，公开仓不保存生产地址。
+请求头：
+
+```text
+Authorization: Bearer <SHUIBEI_DEVELOPER_API_KEY>
+```
+
+当前水杯开源版直接使用：
+
+- `GET /api/v1/fanzha/records?query=...`：成功响应包含 `count` 与 `records`；不可用时客户端降级为 unknown/unavailable。
+- `GET /api/v1/fakebot/check?username=...`：客户端消费 `official/suspect/match/similarity/distance/score`；不可用时 fail closed。
+
+Base URL：`https://api.jizhang.org`。
+
+`runtime.entitlement` 与 `miniapp.launch` 仍属于私有运行能力，不通过上述 Developer API Key 暴露生产内部路由。
