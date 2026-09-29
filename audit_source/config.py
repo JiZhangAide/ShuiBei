@@ -87,6 +87,7 @@ MEMBERSHIP_30D_USDT = "6.66"
 DEVELOPER_API_BASE = "https://api.jizhang.org"
 DEVELOPER_SCAM_API_PATH = "/api/v1/fanzha/records"
 DEVELOPER_FAKEBOT_API_PATH = "/api/v1/fakebot/check"
+DEVELOPER_PROFILE_HISTORY_API_PATH = "/api/v1/telegram/profile/history"
 DEVELOPER_API_KEY = str(os.environ.get("SHUIBEI_DEVELOPER_API_KEY") or "").strip()
 
 TRONGRID_API_KEY = str(
