@@ -1,20 +1,43 @@
+import importlib
+import os
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
-from test_receivables_r31 import reset_local_dbs
+ROOT = Path(__file__).resolve().parents[1]
+MODULE_ROOT = ROOT / "audit_source" if (ROOT / "audit_source").is_dir() else ROOT
+if str(MODULE_ROOT) not in sys.path:
+    sys.path.insert(0, str(MODULE_ROOT))
+
+os.environ.setdefault("SHUIBEI_DATA_DIR", f"/tmp/shuibei-tests-{os.getpid()}")
+
 import config
 import db
+import features
 import ledger
 import receivables
 import advanced_ledger
 
+assert str(config.APP_DB_PATH).startswith("/tmp/shuibei-tests-"), "tests must never use production ShuiBei data"
+DBS = (config.APP_DB_PATH, config.LEDGER_DB_PATH, config.ARCHIVE_DB_PATH, config.SYNC_DB_PATH)
+
 
 def setup_function():
-    reset_local_dbs()
+    for p in DBS:
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.unlink(str(p) + suffix)
+            except FileNotFoundError:
+                pass
+    db._SCHEMA_READY.clear()
+    features._FEATURE_SCHEMA_READY = False
+    db.init_all()
+    features.ensure_feature_schema()
     advanced_ledger._SCHEMA_GENERATION = -1
-    advanced_ledger.ensure_schema()
+    importlib.reload(advanced_ledger)
 
 
 def _seed(owner=91001, peer=92001):
