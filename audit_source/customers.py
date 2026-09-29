@@ -9,12 +9,43 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
-from config import APP_DB_PATH, LEDGER_DB_PATH, ARCHIVE_DB_PATH
+from config import APP_DB_PATH, LEDGER_DB_PATH, ARCHIVE_DB_PATH, DEVELOPER_PROFILE_HISTORY_API_PATH
 from db import connect, init_ledger_db, tx
+from developer_api import DeveloperAPIUnavailable, get_json
 from features import ensure_feature_schema
 
 RECENT_ACTIVE_SECONDS = 7 * 86400
 INACTIVE_SECONDS = 30 * 86400
+
+
+def customer_profile_history(peer_id: int, limit: int = 6) -> dict:
+    """Fetch public Telegram profile history through MoQing Developer API only."""
+    pid = int(peer_id or 0)
+    cap = max(1, min(6, int(limit or 6)))
+    if pid <= 0:
+        return {"available": True, "total": 0, "history": []}
+    try:
+        payload = get_json(DEVELOPER_PROFILE_HISTORY_API_PATH, params={"target": str(pid)})
+    except DeveloperAPIUnavailable:
+        return {"available": False, "total": 0, "history": []}
+    rows = payload.get("history")
+    if not isinstance(rows, list):
+        return {"available": False, "total": 0, "history": []}
+    history = []
+    for row in rows[:cap]:
+        if not isinstance(row, dict):
+            continue
+        history.append({
+            "username": str(row.get("username") or ""),
+            "full_name": str(row.get("full_name") or ""),
+            "about": str(row.get("about") or ""),
+            "observed_at": int(row.get("observed_at") or 0),
+        })
+    return {
+        "available": True,
+        "total": int(payload.get("history_total") or len(history)),
+        "history": history,
+    }
 
 
 def _ledger_time_ts(value: str) -> int:
