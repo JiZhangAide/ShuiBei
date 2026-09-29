@@ -47,7 +47,7 @@ def _runtime_source_fingerprint() -> str:
         "app.py", "telegram_api.py", "config.py", "db.py", "features.py",
         "customers.py", "ledger.py", "receivables.py", "membership.py",
         "access_control.py", "message_protection.py", "sync.py", "scam.py",
-        "fakebot.py", "developer_api.py", "miniapp_auth.py", "miniapp_api.py",
+        "fakebot.py", "developer_api.py", "advanced_ledger.py", "miniapp_auth.py", "miniapp_api.py",
         "public_runtime.py", "crypto_tools.py", "emoji_knowledge.py",
     )]
     for name, fp in sources:
