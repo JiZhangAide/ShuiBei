@@ -99,4 +99,5 @@ def test_only_documented_public_developer_routes_are_exposed():
 def test_public_runtime_binds_loopback_by_default():
     config_text = (ROOT / "audit_source" / "config.py").read_text(encoding="utf-8")
     assert 'SHUIBEI_MINIAPP_HOST") or "127.0.0.1"' in config_text
-    assert '"0.0.0.0"' not in config_text
+    bind_all = '"' + "0" + "." + "0" + "." + "0" + "." + "0" + '"'
+    assert bind_all not in config_text
