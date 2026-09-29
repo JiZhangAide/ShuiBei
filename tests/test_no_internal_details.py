@@ -6,7 +6,6 @@ ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_TEXT = (
     "/" + "www" + "/",
     "/" + "etc" + "/",
-    "127" + "." + "0" + "." + "0" + "." + "1",
     "0" + "." + "0" + "." + "0" + "." + "0",
     "local" + "host",
     "panel" + "." + "jizhang" + "." + "org",
@@ -95,3 +94,9 @@ def test_only_documented_public_developer_routes_are_exposed():
         '"/api/v1/fanzha/records"',
         '"/api/v1/fakebot/check"',
     }
+
+
+def test_public_runtime_binds_loopback_by_default():
+    config_text = (ROOT / "audit_source" / "config.py").read_text(encoding="utf-8")
+    assert 'SHUIBEI_MINIAPP_HOST") or "127.0.0.1"' in config_text
+    assert '"0.0.0.0"' not in config_text
