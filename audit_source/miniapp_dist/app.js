@@ -6,7 +6,7 @@ const app=document.getElementById("app");
 const now=new Date();
 const isoLocal=function(d){const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,"0"),day=String(d.getDate()).padStart(2,"0");return y+"-"+m+"-"+day};
 const monthStart=new Date(now.getFullYear(),now.getMonth(),1);
-const state={viewer:null,categories:["商品","服务","广告","服务器","手续费","人工","其他"],route:"home",peer:0,filter:"all",report:"day",kind:"debt",batch:false,selected:new Set(),customStart:isoLocal(monthStart),customEnd:isoLocal(now)};
+const state={viewer:null,categories:["商品","服务","广告","服务器","手续费","人工","其他"],books:[{id:0,name:"主账本"}],book:0,route:"home",peer:0,filter:"all",report:"day",kind:"debt",batch:false,selected:new Set(),customStart:isoLocal(monthStart),customEnd:isoLocal(now)};
 
 function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
 function money(v,c){return new Intl.NumberFormat("zh-CN",{maximumFractionDigits:4}).format(Number(v||0)/10000)+" "+(c||"USDT")}
@@ -136,6 +136,35 @@ function batchDock(){
   const n=state.selected.size,disabled=n?"":" disabled";
   return '<div class="batch-dock"><div class="batch-count"><b>'+n+'</b><span>已选择</span></div><button data-batch="label"'+disabled+'>'+icon("tag")+'<span>标签</span></button><button data-batch="due"'+disabled+'>'+icon("calendar")+'<span>到期</span></button><button data-batch="remind"'+disabled+'>'+icon("bell")+'<span>催款</span></button><button data-batch="statement"'+disabled+'>'+icon("receipt")+'<span>对账</span></button></div>'
 }
+function statusText(s){return {posted:"已记账",invoiced:"已开账",partial:"部分结清",settled:"已结清",waived:"已减免",reversed:"已冲正"}[String(s||"posted")]||"已记账"}
+function spanDays(sec){const n=Number(sec||0);if(!n)return "暂无";const d=Math.max(1,Math.round(n/86400));return d+" 天"}
+function trendChart(data,currency){
+  const rows=(data&&data.series)||[];
+  if(!rows.length)return '<div class="empty compact"><span>暂无趋势数据。</span></div>';
+  const W=640,H=210,P=28,vals=[];
+  rows.forEach(function(x){vals.push(Number(x.inflow_micro||0),Number(x.outflow_micro||0),Number(x.gross_profit_micro||0))});
+  const max=Math.max.apply(null,vals.concat([1]));
+  function pts(key){return rows.map(function(x,i){const xx=P+(W-P*2)*(rows.length===1?0:i/(rows.length-1));const yy=H-P-(H-P*2)*(Number(x[key]||0)/max);return xx.toFixed(1)+","+yy.toFixed(1)}).join(" ")}
+  const first=rows[0].date||"",mid=rows[Math.floor((rows.length-1)/2)].date||"",last=rows[rows.length-1].date||"";
+  return '<section class="card trend-card"><div class="card-title"><div class="card-icon">'+icon("report")+'</div><div><h3>线性统计图</h3><p>收入、支出与毛利润按天变化</p></div></div><div class="trend-legend"><span class="in">入账</span><span class="out">出账</span><span class="profit">毛利润</span></div><svg class="trend-chart" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" aria-label="经营趋势"><line x1="'+P+'" y1="'+(H-P)+'" x2="'+(W-P)+'" y2="'+(H-P)+'" class="axis-line"/><polyline points="'+pts("inflow_micro")+'" class="chart-line in"/><polyline points="'+pts("outflow_micro")+'" class="chart-line out"/><polyline points="'+pts("gross_profit_micro")+'" class="chart-line profit"/></svg><div class="trend-axis"><span>'+esc(first.slice(5))+'</span><span>'+esc(mid.slice(5))+'</span><span>'+esc(last.slice(5))+'</span></div><span class="hint">纵轴自动按当前区间最大值缩放 · 单位 '+esc(currency||"")+'</span></section>'
+}
+function timelineHtml(rows,currency){
+  if(!rows||!rows.length)return '<div class="empty compact"><span>暂无时间轴记录。</span></div>';
+  return '<div class="timeline">'+rows.slice(0,12).map(function(x){
+    const when=x.created_at?new Date(x.created_at*1000).toLocaleString("zh-CN"):"";
+    let title="记录更新",detail="";
+    if(x.kind==="ledger"){title=statusText(x.status)+" · "+(x.action==="入"?"入账":x.action==="出"?"出账":x.action);detail=money(x.amount_micro,currency)+(x.remark?" · "+x.remark:"")}
+    else if(x.kind==="ledger_reversed"){title="账目冲正";detail="原流水 #"+((x.payload&&x.payload.original_ledger_id)||"")}
+    else if(x.kind==="recurring_generated"){title="周期应收已生成";detail=(x.payload&&x.payload.period_key)||""}
+    else if(x.kind==="template_applied"){title="已使用记账模板";detail="模板 #"+((x.payload&&x.payload.template_id)||"")}
+    else if(x.kind==="recurring_created"){title="已创建周期应收";detail=(x.payload&&x.payload.title)||""}
+    return '<div class="timeline-item"><i></i><div><b>'+esc(title)+'</b><span>'+esc(detail)+'</span><small>'+esc(when)+'</small></div></div>'
+  }).join("")+'</div>'
+}
+function customerSummaryHtml(s){
+  return '<section class="card"><div class="card-title"><div class="card-icon">'+icon("users")+'</div><div><h3>往来摘要</h3><p>只基于真实账务记录，不做主观信用评分。</p></div></div><div class="summary-grid"><div><span>累计往来</span><b>'+money(s.turnover_micro,s.currency)+'</b></div><div><span>流水</span><b>'+Number(s.record_count||0)+' 笔</b></div><div><span>平均结清</span><b>'+spanDays(s.avg_settlement_seconds)+'</b></div><div><span>最长未结</span><b>'+spanDays(s.longest_unsettled_seconds)+'</b></div><div><span>当前逾期</span><b class="'+(s.overdue_days?"danger":"")+'">'+Number(s.overdue_days||0)+' 天</b></div><div><span>结清次数</span><b>'+Number(s.settlement_count||0)+'</b></div></div></section>'
+}
+
 async function viewCustomers(){
   const rows=await req("/customers?filter="+encodeURIComponent(state.filter));
   const fs=[["all","全部"],["debt","待收"],["today","今日到期"],["overdue","已逾期"],["prepay","预付款"]];
@@ -152,33 +181,62 @@ async function viewCustomers(){
 }
 async function viewCustomer(){
   const peer=state.peer;
-  const a=await Promise.all([req("/customers/"+peer),req("/customers/"+peer+"/ledger")]);
-  const c=a[0],rows=a[1],debt=c.balance_micro<0,pre=c.balance_micro>0;
+  const a=await Promise.all([
+    req("/customers/"+peer),
+    req("/customers/"+peer+"/ledger"),
+    req("/customers/"+peer+"/summary"),
+    req("/customers/"+peer+"/timeline?limit=30"),
+    req("/templates?peer_id="+peer),
+    req("/recurring?peer_id="+peer)
+  ]);
+  const c=a[0],rows=a[1],summary=a[2],timeline=a[3],templates=a[4],recurring=a[5],debt=c.balance_micro<0,pre=c.balance_micro>0;
+  const bookMap={};state.books.forEach(function(b){bookMap[Number(b.id)]=b.name});
+  const bookOptions=state.books.map(function(b){return '<option value="'+Number(b.id)+'">'+esc(b.name)+'</option>'}).join("");
   let settle="";
   if(debt)settle='<section class="card" id="settleAction"><div class="card-title"><div class="card-icon">'+icon("check")+'</div><div><h3>收款与结清</h3><p>收到款后及时更新余额。</p></div></div><div class="stack"><button class="btn success wide" id="full">收到全款 · '+money(c.amount_due_micro,c.currency)+'</button><div class="two"><input class="field" id="partial" inputmode="decimal" placeholder="部分收款金额"><button class="btn secondary" id="partialBtn">部分收款</button></div><button class="btn danger-outline wide" id="waive">免除当前欠款</button><span class="hint">减免只清除欠款，不计入实际入账。</span></div></section>';
-  const ledgerHtml=rows.length?rows.map(function(r){let sign=["入","收入","+"].includes(r.action)?"+":["出","支出","-"].includes(r.action)?"-":esc(r.action);const meta=[r.category||"",r.cost_micro?"成本 "+money(r.cost_micro,c.currency):""].filter(Boolean).join(" · ");return '<div class="ledger"><div><strong>'+esc(r.remark||r.action||"账目")+'</strong><span>'+esc(r.time)+(meta?" · "+esc(meta):"")+'</span></div><b class="'+(sign==="+"?"success":sign==="-"?"danger":"")+'">'+sign+money(r.amount_micro,c.currency)+'</b></div>'}).join(""):'<div class="empty compact"><span>暂无流水。</span></div>';
+  const ledgerHtml=rows.length?rows.map(function(r){
+    let sign=["入","收入","+"].includes(r.action)?"+":["出","支出","-"].includes(r.action)?"-":esc(r.action);
+    const meta=[r.category||"",r.cost_micro?"成本 "+money(r.cost_micro,c.currency):"",bookMap[Number(r.book_id||0)]||"主账本",statusText(r.status)].filter(Boolean).join(" · ");
+    const canReverse=r.status!=="reversed"&&!r.reversal_of&&["入","收入","+","出","支出","-"].includes(r.action);
+    return '<div class="ledger ledger-advanced"><div><strong>'+esc(r.remark||r.action||"账目")+'</strong><span>'+esc(r.time)+(meta?" · "+esc(meta):"")+'</span></div><div class="ledger-side"><b class="'+(sign==="+"?"success":sign==="-"?"danger":"")+'">'+sign+money(r.amount_micro,c.currency)+'</b>'+(canReverse?'<button class="mini-link danger" data-reverse-id="'+r.id+'">冲正</button>':r.reversal_of?'<small>冲正 #'+r.reversal_of+'</small>':"")+'</div></div>'
+  }).join(""):'<div class="empty compact"><span>暂无流水。</span></div>';
   const dock='<div class="action-dock"><button data-jump="ledgerAction">'+icon("receipt")+'<span>记账</span></button>'+(debt?'<button data-jump="settleAction">'+icon("check")+'<span>收款</span></button>':"")+'<button data-jump="statementAction">'+icon("report")+'<span>对账</span></button></div>';
   const categoryOptions=state.categories.map(function(x){return '<option value="'+esc(x)+'" '+(x==="其他"?"selected":"")+'>'+esc(x)+'</option>'}).join("");
   const businessFields=state.kind==="debt"?'<div class="two biz-fields"><select class="field" id="category">'+categoryOptions+'</select><input class="field" id="cost" inputmode="decimal" placeholder="成本（可选）"></div><span class="hint">分类用于经营分析；成本不填按 0 计算，只影响利润，不改变客户余额。</span>':"";
+  const templateList=templates.length?'<div class="template-list">'+templates.slice(0,8).map(function(t){return '<button class="template-chip" data-template-id="'+t.id+'"><b>'+esc(t.name)+'</b><span>'+money(t.amount_micro,c.currency)+' · '+(t.kind==="debt"?"新增欠款":"收到款")+'</span></button>'}).join("")+'</div>':'<div class="empty compact"><span>还没有记账模板。</span></div>';
+  const recurringList=recurring.length?'<div class="recurring-list">'+recurring.slice(0,8).map(function(x){return '<div class="recurring-row"><div><b>'+esc(x.title)+'</b><span>'+money(x.amount_micro,c.currency)+' · '+(x.cadence==="weekly"?"每周":"每月")+' · 下次 '+day(x.next_due_at)+'</span></div><button class="mini-link" data-recurring-toggle="'+x.id+'" data-active="'+(Number(x.active||0)?1:0)+'">'+(Number(x.active||0)?"暂停":"启用")+'</button></div>'}).join("")+'</div>':'<div class="empty compact"><span>还没有周期应收。</span></div>';
   return shell(
     '<div class="pagehead customer-head"><button class="back" data-back aria-label="返回">'+icon("arrow")+'</button><div><span class="eyebrow">客户详情</span><h1>'+esc(c.name)+'</h1><p>'+(c.username?"@"+esc(c.username):"往来客户")+'</p></div></div>'+
     '<section class="customer-balance"><div class="balance-top"><span>'+(debt?"当前待收":pre?"当前预付款":"当前状态")+'</span>'+(c.overdue?'<span class="tag">已逾期</span>':"")+'</div><strong class="'+(debt?"danger":pre?"success":"")+'">'+(debt?money(c.amount_due_micro,c.currency):pre?money(c.prepaid_micro,c.currency):"已结清")+'</strong><p>'+(c.due_at?"到期 "+day(c.due_at):debt?"尚未设置到期日":"账务状态正常")+'</p></section>'+
-    '<div class="customergrid"><div><section class="card" id="ledgerAction"><div class="card-title"><div class="card-icon">'+icon("receipt")+'</div><div><h3>记一笔</h3><p>新增欠款可同时记录分类和成本。</p></div></div><div class="stack"><div class="seg"><button data-kind="debt" class="'+(state.kind==="debt"?"active":"")+'">新增欠款</button><button data-kind="payment" class="'+(state.kind==="payment"?"active":"")+'">收到款</button></div><input class="field" id="amt" inputmode="decimal" placeholder="金额 '+esc(c.currency)+'">'+businessFields+'<input class="field" id="remark" placeholder="备注（可选）"><button class="btn wide" id="addLedger">确认记账</button></div></section>'+
+    customerSummaryHtml(summary)+
+    '<div class="customergrid"><div><section class="card" id="ledgerAction"><div class="card-title"><div class="card-icon">'+icon("receipt")+'</div><div><h3>记一笔</h3><p>新增欠款可同时记录项目账、分类和成本。</p></div></div><div class="stack"><div class="seg"><button data-kind="debt" class="'+(state.kind==="debt"?"active":"")+'">新增欠款</button><button data-kind="payment" class="'+(state.kind==="payment"?"active":"")+'">收到款</button></div><input class="field" id="amt" inputmode="decimal" placeholder="金额 '+esc(c.currency)+'"><select class="field" id="book">'+bookOptions+'</select>'+businessFields+'<input class="field" id="remark" placeholder="备注（可选）"><div class="two"><button class="btn wide" id="addLedger">确认记账</button><button class="btn secondary wide" id="saveTemplate">保存模板</button></div></div></section>'+
+    '<section class="card"><div class="card-title"><div class="card-icon">'+icon("layers")+'</div><div><h3>记账模板</h3><p>常用金额一键复用。</p></div></div>'+templateList+'</section>'+
+    '<section class="card"><div class="card-title"><div class="card-icon">'+icon("calendar")+'</div><div><h3>周期应收</h3><p>到期后自动补生成应收，同一期不会重复。</p></div></div><div class="two"><button class="btn secondary" data-new-recurring="monthly">新增每月</button><button class="btn secondary" data-new-recurring="weekly">新增每周</button></div>'+recurringList+'</section>'+
     '<section class="card" id="dueAction"><div class="card-title"><div class="card-icon">'+icon("calendar")+'</div><div><h3>应收到期</h3><p>用到期日区分今日与逾期客户。</p></div></div><div class="stack"><input class="field" id="due" type="date" value="'+(c.due_at?new Date(c.due_at*1000).toISOString().slice(0,10):"")+'"><div class="two"><button class="btn" id="saveDue">保存日期</button><button class="btn secondary" id="clearDue">清除</button></div><span class="hint">当前：'+(c.overdue?"已逾期 · ":"")+day(c.due_at)+'</span></div></section>'+settle+
     '<section class="card" id="statementAction"><div class="card-title"><div class="card-icon">'+icon("report")+'</div><div><h3>对账单</h3><p>先预览，再决定是否发送。</p></div></div><div class="two"><button class="btn secondary" id="preview">预览</button><button class="btn" id="send" '+(c.has_business?"":"disabled")+'>发送给客户</button></div><div id="statement"></div><span class="hint">'+(c.has_business?"当前 Business 会话可直接发送。":"当前只能预览。")+'</span></section></div>'+
-    '<section class="card ledger-card"><div class="card-title"><div class="card-icon">'+icon("receipt")+'</div><div><h3>最近流水</h3><p>最近 '+rows.length+' 条记录</p></div></div>'+ledgerHtml+'</section></div>'+dock,
+    '<div><section class="card ledger-card"><div class="card-title"><div class="card-icon">'+icon("receipt")+'</div><div><h3>最近流水</h3><p>保留原记录，冲正不会删除历史。</p></div></div>'+ledgerHtml+'</section>'+
+    '<section class="card"><div class="card-title"><div class="card-icon">'+icon("clock")+'</div><div><h3>客户时间轴</h3><p>账务、冲正、模板与周期应收统一展示。</p></div></div>'+timelineHtml(timeline,c.currency)+'</section></div></div>'+dock,
     "customer"
   )
 }
+
 function categoryBreakdown(d){
   const rows=d.category_breakdown||[];
   if(!rows.length)return '<div class="profit-note">本周期还没有已分类成交；旧流水不会被强行估算利润。</div>';
   return '<section class="card category-card"><div class="card-title"><div class="card-icon">'+icon("tag")+'</div><div><h3>分类表现</h3><p>按已分类成交额排序</p></div></div><div class="category-list">'+rows.map(function(x){return '<div class="category-item"><div><b>'+esc(x.category)+'</b><span>'+x.count+' 笔 · 成本 '+money(x.cost_micro,d.currency)+'</span></div><div><strong>'+money(x.sales_micro,d.currency)+'</strong><span class="'+(x.gross_profit_micro<0?"danger":"success")+'">毛利 '+money(x.gross_profit_micro,d.currency)+'</span></div></div>'}).join("")+'</div></section>'
 }
 async function viewReports(){
-  let d;
-  if(state.report==="custom")d=await req("/reports/custom?start="+encodeURIComponent(state.customStart)+"&end="+encodeURIComponent(state.customEnd));
-  else d=await req("/reports/"+state.report);
+  let summaryPath,trendPath;
+  if(state.report==="custom"){
+    summaryPath="/reports/custom?start="+encodeURIComponent(state.customStart)+"&end="+encodeURIComponent(state.customEnd);
+    trendPath="/reports/trend?start="+encodeURIComponent(state.customStart)+"&end="+encodeURIComponent(state.customEnd)+"&book_id="+encodeURIComponent(state.book);
+  }else{
+    summaryPath="/reports/"+state.report;
+    const days=state.report==="day"?7:state.report==="week"?14:30;
+    trendPath="/reports/trend?days="+days+"&book_id="+encodeURIComponent(state.book);
+  }
+  const all=await Promise.all([req(summaryPath),req(trendPath),req("/books/overview"),req("/snapshots?limit=8")]);
+  const d=all[0],trend=all[1],books=all[2],snapshots=all[3];
   const ms=[["day","今日"],["week","本周"],["month","本月"],["custom","自定义"]];
   const net=Number(d.inflow_micro||0)-Number(d.outflow_micro||0);
   const hasProfit=Number(d.classified_sale_count||0)>0;
@@ -189,16 +247,23 @@ async function viewReports(){
   const outPct=Math.max(3,Math.round(Number(d.outflow_micro||0)/max*100));
   const custom=state.report==="custom"?'<form class="range-form" id="rangeForm"><input class="field" type="date" id="rangeStart" value="'+esc(state.customStart)+'"><span>至</span><input class="field" type="date" id="rangeEnd" value="'+esc(state.customEnd)+'"><button class="btn" type="submit">查看</button></form>':"";
   const coverage=Number(d.sale_count||0)?Math.round(Number(d.classified_sale_count||0)/Number(d.sale_count||1)*100):0;
+  const bookOptions=state.books.map(function(b){return '<option value="'+Number(b.id)+'" '+(Number(state.book)===Number(b.id)?"selected":"")+'>'+esc(b.name)+'</option>'}).join("");
+  const bookRows=books.length?books.map(function(b){return '<div class="category-item"><div><b>'+esc(b.name)+'</b><span>'+Number(b.record_count||0)+' 笔</span></div><div><strong class="'+(Number(b.net_micro||0)<0?"danger":"success")+'">'+(Number(b.net_micro||0)<0?"-":"")+money(Math.abs(Number(b.net_micro||0)),d.currency)+'</strong><span>入 '+money(b.inflow_micro,d.currency)+' · 出 '+money(b.outflow_micro,d.currency)+'</span></div></div>'}).join(""):'<div class="empty compact"><span>暂无项目账数据。</span></div>';
+  const snapshotRows=snapshots.length?snapshots.map(function(s){const sm=s.summary||{};return '<div class="snapshot-row"><div><b>'+esc(s.period_key)+'</b><span>'+(s.period_kind==="month"?"月结":"周结")+' · '+new Date(Number(s.created_at||0)*1000).toLocaleDateString("zh-CN")+'</span></div><strong>'+money(sm.gross_profit_micro||0,sm.currency||d.currency)+'</strong></div>'}).join(""):'<div class="empty compact"><span>还没有结账快照。</span></div>';
   return shell(
-    '<div class="pagehead"><div><span class="eyebrow">账务概览</span><h1>经营报表</h1><p>现金流、成交成本和毛利润分开看。</p></div></div>'+
+    '<div class="pagehead"><div><span class="eyebrow">账务概览</span><h1>经营报表</h1><p>现金流、成交成本、毛利润和项目账趋势分开看。</p></div></div>'+
     '<div class="tabs report-tabs">'+ms.map(function(x){return '<button data-report="'+x[0]+'" class="'+(state.report===x[0]?"active":"")+'">'+x[1]+'</button>'}).join("")+'</div>'+custom+
     '<section class="overview report-overview"><div class="overview-top"><div><span class="eyebrow">'+esc(d.title)+' · '+heroTitle+'</span><strong class="'+(heroValue<0?"danger":"success")+'">'+(heroValue<0?"-":"")+money(Math.abs(heroValue),d.currency)+'</strong><span class="hero-caption">'+d.record_count+' 条流水 · '+d.active_customer_count+' 位活跃客户</span></div><div class="overview-icon">'+icon("report")+'</div></div></section>'+
     '<section class="flow-card"><div class="flow-row"><div><span>入账</span><b class="success">'+money(d.inflow_micro,d.currency)+'</b></div><i><em style="width:'+inPct+'%"></em></i></div><div class="flow-row"><div><span>出账 / 新增欠款</span><b>'+money(d.outflow_micro,d.currency)+'</b></div><i><em class="out" style="width:'+outPct+'%"></em></i></div></section>'+
     '<div class="reportgrid"><div class="metric report-metric"><div><span>已分类成交额</span><strong>'+money(d.classified_sales_micro,d.currency)+'</strong></div></div><div class="metric report-metric"><div><span>成本</span><strong>'+money(d.cost_micro,d.currency)+'</strong></div></div><div class="metric report-metric"><div><span>毛利润</span><strong class="'+(Number(d.gross_profit_micro||0)<0?"danger":"success")+'">'+money(d.gross_profit_micro,d.currency)+'</strong></div></div><div class="metric report-metric"><div><span>分类覆盖</span><strong>'+coverage+'%</strong></div></div><div class="metric report-metric"><div><span>当前待收</span><strong class="danger">'+money(d.receivable_micro,d.currency)+'</strong></div></div><div class="metric report-metric"><div><span>逾期客户</span><strong class="danger">'+d.overdue_count+'</strong></div></div></div>'+
+    '<div class="trend-select"><label>趋势项目账</label><select class="field" id="trendBook">'+bookOptions+'</select></div>'+trendChart(trend,d.currency)+
+    '<section class="card"><div class="card-title split-head"><div class="card-title"><div class="card-icon">'+icon("layers")+'</div><div><h3>项目账</h3><p>主账本之外可按项目归类新流水。</p></div></div><button class="btn secondary compact-btn" id="newBook">新建</button></div><div class="category-list">'+bookRows+'</div></section>'+
+    '<section class="card"><div class="card-title"><div class="card-icon">'+icon("calendar")+'</div><div><h3>周 / 月结快照</h3><p>同一周期只保存一次，历史快照不被后续改动覆盖。</p></div></div><div class="two"><button class="btn secondary" data-snapshot="week">保存本周快照</button><button class="btn secondary" data-snapshot="month">保存本月快照</button></div><div class="snapshot-list">'+snapshotRows+'</div></section>'+
     categoryBreakdown(d),
     "reports"
   )
 }
+
 async function render(){
   app.innerHTML=skeleton(state.route);
   try{
@@ -251,9 +316,18 @@ function bind(){
   document.querySelectorAll("[data-kind]").forEach(function(b){b.onclick=function(){state.kind=b.dataset.kind;feedback("light");render()}});
   const rf=document.getElementById("rangeForm");if(rf)rf.onsubmit=function(e){e.preventDefault();state.customStart=document.getElementById("rangeStart").value;state.customEnd=document.getElementById("rangeEnd").value;if(!state.customStart||!state.customEnd)return toast("请选择完整日期","error");render()};
   const sf=document.getElementById("searchForm");if(sf)sf.onsubmit=async function(e){e.preventDefault();try{const q=document.getElementById("searchQ").value;const rows=await req("/customers?filter="+encodeURIComponent(state.filter)+"&q="+encodeURIComponent(q));state.selected.clear();document.getElementById("customerList").dataset.visiblePeers=rows.map(function(x){return x.peer_id}).join(",");document.getElementById("customerList").innerHTML=rows.length?rows.map(function(x){return customerRow(x,state.batch)}).join(""):'<div class="empty"><div class="empty-icon">'+icon("search")+'</div><strong>没有找到客户</strong><span>换一个关键词试试。</span></div>';bind()}catch(x){toast(x.message,"error")}};
+  const trendBook=document.getElementById("trendBook");if(trendBook)trendBook.onchange=function(){state.book=Number(trendBook.value||0);render()};
+  const newBook=document.getElementById("newBook");if(newBook)newBook.onclick=async function(){const name=await inputAsk("新建项目账","给这个项目账起一个名字。","text","例如：服务器项目","");if(!name)return;try{await req("/books","POST",{name:name});state.books=await req("/books");feedback("success");toast("项目账已创建","success");render()}catch(e){feedback("error");toast(e.message,"error")}};
+  document.querySelectorAll("[data-snapshot]").forEach(function(b){b.onclick=async function(){try{await req("/snapshots","POST",{period:b.dataset.snapshot});feedback("success");toast("快照已保存","success");render()}catch(e){feedback("error");toast(e.message,"error")}}});
   if(state.route!=="customer")return;
   const peer=state.peer;
-  const add=document.getElementById("addLedger");if(add)add.onclick=async function(){if(add.disabled)return;const n=Number(document.getElementById("amt").value);if(!n||n<=0)return toast("请输入正确金额","error");const cat=document.getElementById("category");const costEl=document.getElementById("cost");const cost=costEl&&costEl.value?Number(costEl.value):0;if(cost<0||!Number.isFinite(cost))return toast("请输入正确成本","error");add.disabled=true;try{await financialReq("/customers/"+peer+"/ledger",{kind:state.kind,amount_micro:Math.round(n*10000),remark:document.getElementById("remark").value,category:cat?cat.value:"",cost_micro:Math.round(cost*10000)});feedback("success");toast("已记账","success");render()}catch(e){feedback("error");toast(e.message,"error");add.disabled=false}};
+  const add=document.getElementById("addLedger");if(add)add.onclick=async function(){if(add.disabled)return;const n=Number(document.getElementById("amt").value);if(!n||n<=0)return toast("请输入正确金额","error");const cat=document.getElementById("category");const costEl=document.getElementById("cost");const bookEl=document.getElementById("book");const cost=costEl&&costEl.value?Number(costEl.value):0;if(cost<0||!Number.isFinite(cost))return toast("请输入正确成本","error");add.disabled=true;try{await financialReq("/customers/"+peer+"/ledger",{kind:state.kind,amount_micro:Math.round(n*10000),remark:document.getElementById("remark").value,category:cat?cat.value:"",cost_micro:Math.round(cost*10000),book_id:Number(bookEl&&bookEl.value||0)});feedback("success");toast("已记账","success");render()}catch(e){feedback("error");toast(e.message,"error");add.disabled=false}};
+  const saveTemplate=document.getElementById("saveTemplate");if(saveTemplate)saveTemplate.onclick=async function(){const n=Number(document.getElementById("amt").value);if(!n||n<=0)return toast("先填写模板金额","error");const name=await inputAsk("保存记账模板","保存当前金额、项目账、分类和备注，之后可以一键记账。","text","例如：服务器月费","");if(!name)return;const cat=document.getElementById("category"),costEl=document.getElementById("cost"),bookEl=document.getElementById("book");try{await req("/templates","POST",{name:name,peer_id:peer,kind:state.kind,amount_micro:Math.round(n*10000),remark:document.getElementById("remark").value,category:cat?cat.value:"",cost_micro:Math.round(Number(costEl&&costEl.value||0)*10000),book_id:Number(bookEl&&bookEl.value||0)});feedback("success");toast("模板已保存","success");render()}catch(e){feedback("error");toast(e.message,"error")}};
+  document.querySelectorAll("[data-template-id]").forEach(function(b){b.onclick=async function(){if(!await ask("使用记账模板","将立即为当前客户生成一笔账。","确认记账",false))return;try{await req("/templates/"+Number(b.dataset.templateId)+"/apply","POST",{peer_id:peer});feedback("success");toast("模板已应用","success");render()}catch(e){feedback("error");toast(e.message,"error")}}});
+  document.querySelectorAll("[data-reverse-id]").forEach(function(b){b.onclick=async function(){if(!await ask("冲正这笔流水","不会删除原记录，而是追加一笔反向流水并标记原账目已冲正。","确认冲正",true))return;try{await req("/ledger/"+Number(b.dataset.reverseId)+"/reverse","POST",{});feedback("success");toast("已冲正","success");render()}catch(e){feedback("error");toast(e.message,"error")}}});
+  document.querySelectorAll("[data-new-recurring]").forEach(function(b){b.onclick=async function(){const cadence=b.dataset.newRecurring;const title=await inputAsk("新增周期应收","到期后会幂等生成一笔应收。","text","例如：服务器月费","");if(!title)return;const amount=Number(await inputAsk("周期金额","输入每期应收金额。","number","100",""));if(!amount||amount<=0)return toast("金额无效","error");const date=await inputAsk("首次到期日","选择第一次生成应收的日期。","date","",isoLocal(now));if(!date)return;const bookEl=document.getElementById("book");try{await req("/recurring","POST",{peer_id:peer,title:title,amount_micro:Math.round(amount*10000),cadence:cadence,next_due_at:Math.floor(new Date(date+"T23:59:59").getTime()/1000),book_id:Number(bookEl&&bookEl.value||0),remark:title,category:"服务"});feedback("success");toast("周期应收已创建","success");render()}catch(e){feedback("error");toast(e.message,"error")}}});
+  document.querySelectorAll("[data-recurring-toggle]").forEach(function(b){b.onclick=async function(){const active=Number(b.dataset.active||0)?false:true;try{await req("/recurring/"+Number(b.dataset.recurringToggle)+"/active","POST",{active:active});feedback("success");toast(active?"已启用":"已暂停","success");render()}catch(e){feedback("error");toast(e.message,"error")}}});
+
   async function saveDue(ts){try{await req("/customers/"+peer+"/due","POST",{due_at:ts});feedback("success");toast("到期日已更新","success");render()}catch(e){feedback("error");toast(e.message,"error")}}
   const sd=document.getElementById("saveDue");if(sd)sd.onclick=function(){const v=document.getElementById("due").value;if(!v)return toast("请选择日期","error");saveDue(Math.floor(new Date(v+"T23:59:59").getTime()/1000))};
   const cd=document.getElementById("clearDue");if(cd)cd.onclick=function(){saveDue(0)};
@@ -266,6 +340,6 @@ function bind(){
 }
 async function start(){
   if(!initData){app.innerHTML='<div class="boot"><div class="logo large">杯</div><strong>请从 Telegram 打开水杯记账</strong><span>打开后即可安全查看你的账本。</span></div>';return}
-  try{const b=await req("/bootstrap");state.viewer=b.viewer;if(Array.isArray(b.categories)&&b.categories.length)state.categories=b.categories;render()}catch(e){app.innerHTML='<div class="boot"><div class="logo large">杯</div><strong>暂时没打开</strong><span>'+esc(e.message)+'</span><button class="btn" onclick="location.reload()">重新加载</button></div>'}
+  try{const b=await req("/bootstrap");state.viewer=b.viewer;if(Array.isArray(b.categories)&&b.categories.length)state.categories=b.categories;if(Array.isArray(b.books)&&b.books.length)state.books=b.books;render()}catch(e){app.innerHTML='<div class="boot"><div class="logo large">杯</div><strong>暂时没打开</strong><span>'+esc(e.message)+'</span><button class="btn" onclick="location.reload()">重新加载</button></div>'}
 }
 start();
