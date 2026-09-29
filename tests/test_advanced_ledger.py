@@ -1,15 +1,32 @@
 import importlib
+import os
 import time
 
-from test_receivables_r31 import reset_local_dbs
+os.environ.setdefault("SHUIBEI_DATA_DIR", f"/tmp/shuibei-tests-{os.getpid()}")
 
+import config
+import db
+import features
 import advanced_ledger
 import ledger
 import receivables
 
+assert str(config.APP_DB_PATH).startswith("/tmp/shuibei-tests-"), "tests must never use production ShuiBei data"
+
+DBS = (config.APP_DB_PATH, config.LEDGER_DB_PATH, config.ARCHIVE_DB_PATH, config.SYNC_DB_PATH)
+
 
 def _reset():
-    reset_local_dbs()
+    for p in DBS:
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.unlink(str(p) + suffix)
+            except FileNotFoundError:
+                pass
+    db._SCHEMA_READY.clear()
+    features._FEATURE_SCHEMA_READY = False
+    db.init_all()
+    features.ensure_feature_schema()
     advanced_ledger._SCHEMA_GENERATION = -1
     importlib.reload(advanced_ledger)
 
