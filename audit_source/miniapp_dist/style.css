@@ -127,3 +127,13 @@ svg{display:block;width:20px;height:20px}
 .trend-chart{width:100%;height:180px;overflow:visible}.trend-chart .axis-line{stroke:var(--line-strong);stroke-width:1}.trend-chart .chart-line{fill:none;stroke-width:2.3;stroke-linecap:round;stroke-linejoin:round}.trend-chart .chart-line.in{stroke:var(--success)}.trend-chart .chart-line.out{stroke:var(--danger)}.trend-chart .chart-line.profit{stroke:var(--accent)}
 .trend-axis{display:flex;justify-content:space-between;margin-top:3px;color:var(--muted);font-size:8.5px}
 @media(min-width:620px){.summary-grid{grid-template-columns:repeat(3,1fr)}.trend-chart{height:210px}}
+
+.goal-card{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:9px 0 0;padding:13px 14px;border:1px solid var(--line);border-radius:13px;background:var(--surface)}
+.goal-card>div{min-width:0;flex:1}.goal-card strong{display:block;margin-top:5px;font-size:13px}.goal-card small{display:block;margin-top:5px;font-size:9px;color:var(--muted)}
+.goal-card i{display:block;height:6px;margin-top:8px;border-radius:999px;background:var(--soft);overflow:hidden}.goal-card em{display:block;height:100%;border-radius:inherit;background:var(--success)}
+.goal-card .btn{flex:0 0 auto;min-height:38px}.empty-goal{border-style:dashed}
+.profile-strip{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:9px 0;padding:12px 13px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+.profile-strip>div:first-child{min-width:0}.profile-strip strong{display:block;margin-top:4px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.profile-strip small{display:block;margin-top:3px;font-size:9px;color:var(--muted)}
+.profile-strip>div:last-child{display:flex;gap:6px;flex:0 0 auto}.profile-strip .btn{min-height:36px;padding:0 10px}
+.three-actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px}
+@media(max-width:460px){.goal-card,.profile-strip{align-items:flex-start}.profile-strip{flex-direction:column}.profile-strip>div:last-child{width:100%}.profile-strip .btn{flex:1}.three-actions{grid-template-columns:1fr}.goal-card .btn{min-width:88px}}
