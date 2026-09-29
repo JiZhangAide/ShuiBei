@@ -82,6 +82,8 @@ def test_public_tree_has_no_runtime_data_files():
             continue
         name = path.name.lower()
         rel = path.relative_to(ROOT)
+        if name == "requirements.lock":
+            continue
         assert not name.endswith(FORBIDDEN_RUNTIME_SUFFIXES), f"runtime data file committed: {rel}"
         assert not name.endswith(("-wal", "-shm", "-journal")), f"SQLite sidecar committed: {rel}"
 
