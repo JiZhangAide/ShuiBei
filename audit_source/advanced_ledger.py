@@ -267,6 +267,7 @@ def set_entry_meta(
     reversal_of: int | None = None,
     source_message_id: int | None = None,
     attachment_ref: str | None = None,
+    _internal: bool = False,
 ) -> dict:
     ensure_schema()
     oid, lid = int(owner_id), int(ledger_id)
@@ -288,7 +289,11 @@ def set_entry_meta(
     st = str(old.get("status") or "posted") if status is None else str(status or "").strip().lower()
     if st not in _ENTRY_STATUSES:
         raise ValueError("账目状态无效")
+    if status is not None and st == "reversed" and not _internal:
+        raise ValueError("reversed 状态只能由冲正流程设置")
     rev = int(old.get("reversal_of") or 0) if reversal_of is None else max(0, int(reversal_of or 0))
+    if reversal_of is not None and rev > 0 and not _internal:
+        raise ValueError("reversal_of 只能由冲正流程设置")
     source = int(old.get("source_message_id") or 0) if source_message_id is None else max(0, int(source_message_id or 0))
     attachment = str(old.get("attachment_ref") or "") if attachment_ref is None else str(attachment_ref or "")[:500]
     now = int(time.time())
@@ -413,76 +418,124 @@ def record_entry(
 
 
 def accounting_excluded_ledger_ids(owner_id: int, ledger_ids: list[int] | tuple[int, ...]) -> set[int]:
-    """Return original+reversal ids that should be excluded from aggregate reports."""
-    meta = entry_meta_map(owner_id, ledger_ids)
+    """Return accounting-cancelled ids from authoritative ledger reversal links."""
+    ids = sorted({int(x) for x in ledger_ids if int(x) > 0})
+    if not ids:
+        return set()
+    init_ledger_db()
+    marks = ",".join("?" for _ in ids)
+    conn = connect(LEDGER_DB_PATH)
+    try:
+        rows = conn.execute(
+            f"SELECT id,reversal_of,reversed_by FROM ledger WHERE owner_id=? AND id IN ({marks})",
+            (int(owner_id), *ids),
+        ).fetchall()
+    finally:
+        conn.close()
     excluded: set[int] = set()
-    for lid, row in meta.items():
-        rev = int(row.get("reversal_of") or 0)
-        if rev > 0:
-            excluded.add(int(lid))
-            excluded.add(rev)
-        if str(row.get("status") or "") == "reversed":
-            excluded.add(int(lid))
+    for row in rows:
+        lid = int(row["id"])
+        if int(row["reversal_of"] or 0) > 0 or int(row["reversed_by"] or 0) > 0:
+            excluded.add(lid)
     return excluded
 
 
 def reverse_entry(owner_id: int, ledger_id: int, *, remark: str = "") -> dict:
-    from ledger import apply_delta, currency
+    from ledger import currency
 
     ensure_schema()
     oid, lid = int(owner_id), int(ledger_id)
     init_ledger_db()
-    conn = connect(LEDGER_DB_PATH)
-    try:
-        row = conn.execute(
-            "SELECT id,peer_id,user_name,action,amount_micro,remark,category,cost_micro FROM ledger WHERE owner_id=? AND id=?",
-            (oid, lid),
-        ).fetchone()
-    finally:
-        conn.close()
-    if not row:
-        raise ValueError("账目不存在")
     meta = entry_meta_map(oid, [lid]).get(lid, {})
-    if str(meta.get("status") or "") == "reversed":
-        raise ValueError("该账目已经冲正")
-    conn = connect(APP_DB_PATH)
-    try:
-        existing = conn.execute(
-            "SELECT ledger_id FROM ledger_entry_meta WHERE owner_id=? AND reversal_of=? LIMIT 1",
+    book_id = int(meta.get("book_id") or 0)
+
+    with tx(LEDGER_DB_PATH, immediate=True) as conn:
+        row = conn.execute(
+            """SELECT id,peer_id,user_name,action,amount_micro,remark,category,cost_micro,
+                      reversal_of,reversed_by
+               FROM ledger WHERE owner_id=? AND id=?""",
             (oid, lid),
         ).fetchone()
-    finally:
-        conn.close()
-    if existing:
-        raise ValueError("该账目已经冲正")
+        if not row:
+            raise ValueError("账目不存在")
+        if int(row["reversal_of"] or 0) > 0:
+            raise ValueError("冲正流水不能再次冲正")
+        if int(row["reversed_by"] or 0) > 0:
+            raise ValueError("该账目已经冲正")
+        existing = conn.execute(
+            "SELECT id FROM ledger WHERE owner_id=? AND reversal_of=? LIMIT 1",
+            (oid, lid),
+        ).fetchone()
+        if existing:
+            raise ValueError("该账目已经冲正")
 
-    action = str(row["action"] or "")
-    amount = abs(int(row["amount_micro"] or 0))
-    if action in {"入", "收入", "+"}:
-        delta, reverse_action = -amount, "出"
-    elif action in {"出", "支出", "-"}:
-        delta, reverse_action = amount, "入"
-    else:
-        raise ValueError("该类型流水暂不支持冲正")
-    note = str(remark or "").strip() or f"冲正 #{lid} · {str(row['remark'] or '').strip()}"
-    rid, before, after = apply_delta(
-        oid,
-        int(row["peer_id"] or 0),
-        str(row["user_name"] or "客户"),
-        reverse_action,
-        delta,
-        note[:500],
-    )
-    book_id = int(meta.get("book_id") or 0)
-    set_entry_meta(oid, lid, status="reversed")
-    set_entry_meta(oid, rid, book_id=book_id, status="posted", reversal_of=lid)
-    log_customer_event(
-        oid,
-        int(row["peer_id"] or 0),
-        "ledger_reversed",
-        {"original_ledger_id": lid, "reversal_ledger_id": rid, "amount_micro": amount},
-        ref_id=rid,
-    )
+        action = str(row["action"] or "")
+        amount = abs(int(row["amount_micro"] or 0))
+        if action in {"入", "收入", "+"}:
+            delta, reverse_action = -amount, "出"
+        elif action in {"出", "支出", "-"}:
+            delta, reverse_action = amount, "入"
+        else:
+            raise ValueError("该类型流水暂不支持冲正")
+
+        pid = int(row["peer_id"] or 0)
+        current = conn.execute(
+            "SELECT balance_micro FROM ledger WHERE owner_id=? AND peer_id=? ORDER BY id DESC LIMIT 1",
+            (oid, pid),
+        ).fetchone()
+        before = int(current[0] or 0) if current else 0
+        after = before + delta
+        if not -(2**63) <= after <= 2**63 - 1:
+            raise ValueError("余额超出存储范围")
+
+        note = str(remark or "").strip() or f"冲正 #{lid} · {str(row['remark'] or '').strip()}"
+        cur = conn.execute(
+            """INSERT INTO ledger(
+                   owner_id,peer_id,user_name,action,amount_micro,balance_micro,remark,time,
+                   category,cost_micro,reversal_of,reversed_by
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,0)""",
+            (
+                oid,
+                pid,
+                str(row["user_name"] or "客户"),
+                reverse_action,
+                amount,
+                after,
+                note[:500],
+                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                "",
+                0,
+                lid,
+            ),
+        )
+        rid = int(cur.lastrowid or 0)
+        updated = conn.execute(
+            "UPDATE ledger SET reversed_by=? WHERE owner_id=? AND id=? AND reversed_by=0",
+            (rid, oid, lid),
+        )
+        if int(updated.rowcount or 0) != 1:
+            raise ValueError("该账目已经冲正")
+
+    try:
+        set_entry_meta(oid, lid, status="reversed", _internal=True)
+        set_entry_meta(
+            oid,
+            rid,
+            book_id=book_id,
+            status="posted",
+            reversal_of=lid,
+            _internal=True,
+        )
+        log_customer_event(
+            oid,
+            pid,
+            "ledger_reversed",
+            {"original_ledger_id": lid, "reversal_ledger_id": rid, "amount_micro": amount},
+            ref_id=rid,
+        )
+    except Exception:
+        pass
+
     return {
         "original_ledger_id": lid,
         "reversal_ledger_id": rid,
