@@ -41,6 +41,20 @@ SHUIBEI_BOT_USERNAME=@ShuiBei_bot
 
 开源版会在导入配置时自动读取仓库根目录 `.env`；真实环境变量优先于 `.env`。
 
+## MiniApp 公开范围
+
+MiniApp 现在也包含在公开审计源码中：
+
+- `audit_source/miniapp_dist/index.html`
+- `audit_source/miniapp_dist/app.js`
+- `audit_source/miniapp_dist/style.css`
+- `audit_source/miniapp_api.py`
+- `audit_source/miniapp_auth.py`
+
+前端仅使用同源 `/ShuiBei/api/miniapp/v1/*` 路径；所有业务数据接口都通过 Telegram 签名 `initData` 鉴权。财务写操作使用更短的 10 分钟授权窗口，并保留幂等保护。
+
+公开版本不包含生产 PostgreSQL 接线、私有 MoQing runtime、部署拓扑、生产凭据或支付 provider 私有接线。
+
 ## 公开与私有边界
 
 公开仓允许看到公开 Developer API 的正式域名和上述公开路由；仍然不公开生产内部 service 路由、生产凭据、服务器目录、私网信息、支付接线、运营后台、生产数据库/日志/运行态文件或私有 transport。
