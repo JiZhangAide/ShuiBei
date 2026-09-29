@@ -2,9 +2,11 @@
 from __future__ import annotations
 import re
 try:
-    from .moqing_gateway import MoQingGatewayError, current_gateway
+    from .config import DEVELOPER_FAKEBOT_API_PATH
+    from .developer_api import DeveloperAPIUnavailable, get_json
 except ImportError:
-    from moqing_gateway import MoQingGatewayError, current_gateway
+    from config import DEVELOPER_FAKEBOT_API_PATH
+    from developer_api import DeveloperAPIUnavailable, get_json
 
 def normalize_username(value: str) -> str:
     return re.sub(r"[^a-z0-9_]", "", str(value or "").strip().lower().lstrip("@"))
@@ -13,8 +15,8 @@ def find_suspect_state(value: str) -> tuple[bool, dict | None, bool]:
     username = normalize_username(value)
     if not username: return True, None, False
     try:
-        payload = current_gateway().fakebot_check(username)
-    except MoQingGatewayError:
+        payload = get_json(DEVELOPER_FAKEBOT_API_PATH, params={"username": username})
+    except DeveloperAPIUnavailable:
         return False, None, False
     if str(payload.get("detail") or "") == "invalid_username": return True, None, False
     if bool(payload.get("official")): return True, None, True
