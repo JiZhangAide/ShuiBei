@@ -162,3 +162,42 @@ def test_strict_db_permission_failure_is_not_silenced():
         else:
             os.environ["SHUIBEI_STRICT_DB_PERMISSIONS"] = old
         os.chmod(path, 0o600)
+
+
+def test_customer_profile_and_monthly_goal_round_trip():
+    owner, peer = 96001, 97001
+    ledger.add_record(owner, peer, "ProfileUser", "出", 10000, -10000, "seed")
+
+    profile = advanced_ledger.set_customer_profile(owner, peer, alias="服务器客户", pinned=True)
+    assert profile["alias"] == "服务器客户"
+    assert profile["pinned"] is True
+    stored = advanced_ledger.customer_profile_map(owner, [peer])[peer]
+    assert stored["alias"] == "服务器客户"
+    assert stored["pinned"] is True
+
+    goal = advanced_ledger.set_goal(owner, 50000000)
+    assert goal["target_micro"] == 50000000
+    current = advanced_ledger.current_goal(owner)
+    assert current["target_micro"] == 50000000
+    assert current["current_micro"] >= 0
+
+
+def test_miniapp_static_contains_bookkeeping_convenience_features():
+    app_js = (Path(miniapp_api.__file__).resolve().parent / "miniapp_dist" / "app.js").read_text(encoding="utf-8")
+    css = (Path(miniapp_api.__file__).resolve().parent / "miniapp_dist" / "style.css").read_text(encoding="utf-8")
+    for needle in (
+        "amountExpr",
+        "复制上一笔",
+        "客户别名",
+        "置顶客户",
+        "本月经营目标",
+        "overdue_1_3",
+        "overdue_4_7",
+        "overdue_8_30",
+        "overdue_30",
+        "线性统计图",
+    ):
+        assert needle in app_js
+    assert ".goal-card" in css
+    assert ".profile-strip" in css
+    assert ".trend-chart" in css
