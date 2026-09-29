@@ -539,6 +539,33 @@ def register_shuibei_miniapp(app, *, static_dir: str):
         profile = customer_profile_map(uid, [int(peer_id)]).get(int(peer_id))
         return _ok(_customer_row(uid, d, profile))
 
+    @bp.route("/api/miniapp/v1/customers/<int:peer_id>/profile", methods=["POST"])
+    @_auth_required
+    def customer_profile_update(peer_id: int):
+        uid = int(g.shuibei_auth.user_id)
+        body = request.get_json(silent=True) or {}
+        try:
+            return _ok(set_customer_profile(
+                uid,
+                int(peer_id),
+                alias=body.get("alias") if "alias" in body else None,
+                pinned=body.get("pinned") if "pinned" in body else None,
+            ))
+        except ValueError as exc:
+            return _fail(str(exc), 400)
+
+    @bp.route("/api/miniapp/v1/goal", methods=["GET", "POST"])
+    @_auth_required
+    def bookkeeping_goal():
+        uid = int(g.shuibei_auth.user_id)
+        if request.method == "GET":
+            return _ok(current_goal(uid))
+        body = request.get_json(silent=True) or {}
+        try:
+            return _ok(set_goal(uid, int(body.get("target_micro") or 0)))
+        except (TypeError, ValueError) as exc:
+            return _fail(str(exc) or "经营目标无效", 400)
+
     @bp.route("/api/miniapp/v1/customers/<int:peer_id>/ledger")
     @_auth_required
     def customer_ledger(peer_id: int):
