@@ -819,6 +819,13 @@ def _private_command(api: TelegramAPI, message: dict) -> bool:
             wait_clear(owner_id)
         except Exception:
             pass
+        payload = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
+        biz_match = re.fullmatch(r"bizChat([1-9]\d{4,19})", payload)
+        if biz_match and "_r29_business_manage_start" in globals():
+            peer_id = int(biz_match.group(1))
+            _r29_business_manage_start(api, owner_id, chat_id, peer_id)
+            print(f"[ShuiBei] Business manage context opened peer={peer_id}", flush=True)
+            return True
         try:
             seen = bool(onboarding_seen(owner_id))
         except Exception as exc:
@@ -1637,7 +1644,7 @@ def run() -> None:
 # ================== r29：轻量商户客户账本 / 客户中心 ==================
 # 2026-09-16。账本金额仍只以 ledger.db 为真值；本层只增加客户索引、轻量 CRM 与 UI。
 from customers import (
-    touch_business_customer, list_customers, customer_detail, set_customer_meta,
+    touch_business_customer, list_customers, customer_detail, customer_profile_history, set_customer_meta,
     mark_collection_reminded, merchant_summary, bootstrap_customer_index,
 )
 from features import (
@@ -1659,6 +1666,45 @@ def _r29_time(ts: int) -> str:
         return time.strftime("%Y-%m-%d %H:%M", time.localtime(int(ts)))
     except Exception:
         return "暂无记录"
+
+
+def _r29_profile_history_text(peer_id: int) -> str:
+    data = customer_profile_history(int(peer_id), 6)
+    if not bool(data.get("available")):
+        return "🗒 历史资料：暂不可用"
+    rows = list(data.get("history") or [])
+    total = int(data.get("total") or len(rows))
+    if total <= 0 or not rows:
+        return "🗒 历史资料：暂无记录"
+
+    def render_row(row: dict) -> list[str]:
+        ts = int(row.get("observed_at") or 0)
+        when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) if ts > 0 else "未知时间"
+        username = str(row.get("username") or "").strip().lstrip("@")
+        full_name = re.sub(r"\s+", " ", str(row.get("full_name") or "")).strip()
+        about = re.sub(r"\s+", " ", str(row.get("about") or "")).strip()
+        return [
+            html.escape(when),
+            f"👤 昵称：{html.escape(full_name or '无')}",
+            f"👤 用户名：{html.escape('@' + username if username else '无')}",
+            f"简介：{html.escape(about or '无')}",
+        ]
+
+    lines = [f"🗒 历史资料 共 {total} 条", ""]
+    lines.extend(render_row(rows[0]))
+    older = rows[1:]
+    if older:
+        hidden = []
+        for index, row in enumerate(older):
+            if index:
+                hidden.append("")
+            hidden.extend(render_row(row))
+        lines.extend([
+            "",
+            f"📚 更早的 {len(older)} 条记录",
+            "<blockquote expandable>" + "\n".join(hidden) + "</blockquote>",
+        ])
+    return "\n".join(lines)
 
 
 def _r29_home_text(owner_id: int) -> str:
@@ -1798,15 +1844,18 @@ def _r29_customer_list_keyboard(owner_id: int, mode: str):
     return {"inline_keyboard":rows}
 
 
-def _r29_customer_detail_text(owner_id: int, peer_id: int) -> str:
+def _r29_customer_detail_text(owner_id: int, peer_id: int, *, title: str = "客户档案") -> str:
     d=customer_detail(owner_id,peer_id)
     if not d: return _ui_notice("unknown","客户不存在","没有找到这个客户。")
     bal=int(d.get("balance_micro") or 0)
     state=("客户欠款 "+_r29_money(owner_id,abs(bal))) if bal<0 else (("客户预付款 "+_r29_money(owner_id,bal)) if bal>0 else "账目已结清")
-    lines=[_ui_title("user","客户档案","👤"),"",
+    lines=[_ui_title("user",title,"👤"),"",
         _ui_field("客户",str(d.get("name") or "客户")),
         _ui_field("用户名",("@"+str(d.get("username"))) if d.get("username") else "-"),
         _ui_field("Telegram ID",str(int(d.get("peer_id") or 0))),
+        "",
+        _r29_profile_history_text(int(d.get("peer_id") or peer_id)),
+        "",
         _ui_field("账务",state),
         _ui_field("最后联系",_r29_time(int(d.get("last_contact_at") or 0))),
         _ui_field("标签",str(d.get("label") or "未设置")),
@@ -1829,6 +1878,24 @@ def _r29_customer_detail_keyboard(owner_id: int, peer_id: int):
     rows += [[button("查看账本",f"customer:ledger:{peer_id}",icon_custom_emoji_id=premium_icon("ledger"),style="primary")],
              [button("返回客户中心","menu:section:customers",icon_custom_emoji_id=premium_icon("back"),style="primary")]]
     return {"inline_keyboard":rows}
+
+
+def _r29_business_manage_start(api: TelegramAPI, owner_id: int, chat_id: int, peer_id: int) -> bool:
+    """Open only an owner-scoped known Business customer from Telegram's bizChat deep link."""
+    d = customer_detail(int(owner_id), int(peer_id))
+    if not d or not bool(d.get("has_business")):
+        api.send_message(
+            int(chat_id),
+            _ui_notice("unknown", "客户资料暂未建立", "请先在该 Telegram Business 会话中产生一条消息后再打开管理机器人。"),
+            reply_markup=main_keyboard(int(owner_id), "home"),
+        )
+        return True
+    api.send_message(
+        int(chat_id),
+        _r29_customer_detail_text(int(owner_id), int(peer_id), title="当前 Business 客户"),
+        reply_markup=_r29_customer_detail_keyboard(int(owner_id), int(peer_id)),
+    )
+    return True
 
 
 def _r29_bill_customer_keyboard(owner_id: int, mode: str):
