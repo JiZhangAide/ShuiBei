@@ -18,19 +18,22 @@ RECENT_ACTIVE_SECONDS = 7 * 86400
 INACTIVE_SECONDS = 30 * 86400
 
 
-def customer_profile_history(peer_id: int, limit: int = 6) -> dict:
+def customer_profile_history(target: int | str, limit: int = 6) -> dict:
     """Fetch public Telegram profile history through MoQing Developer API only."""
-    pid = int(peer_id or 0)
+    raw = str(target or "").strip()
+    if raw.startswith("https://t.me/"):
+        raw = raw[len("https://t.me/"):]
+    raw = raw.strip().strip("/")
     cap = max(1, min(6, int(limit or 6)))
-    if pid <= 0:
-        return {"available": True, "total": 0, "history": []}
+    if not raw:
+        return {"available": True, "user_id": 0, "current": {}, "total": 0, "history": []}
     try:
-        payload = get_json(DEVELOPER_PROFILE_HISTORY_API_PATH, params={"target": str(pid)})
+        payload = get_json(DEVELOPER_PROFILE_HISTORY_API_PATH, params={"target": raw})
     except DeveloperAPIUnavailable:
-        return {"available": False, "total": 0, "history": []}
+        return {"available": False, "user_id": 0, "current": {}, "total": 0, "history": []}
     rows = payload.get("history")
     if not isinstance(rows, list):
-        return {"available": False, "total": 0, "history": []}
+        return {"available": False, "user_id": 0, "current": {}, "total": 0, "history": []}
     history = []
     for row in rows[:cap]:
         if not isinstance(row, dict):
@@ -41,8 +44,18 @@ def customer_profile_history(peer_id: int, limit: int = 6) -> dict:
             "about": str(row.get("about") or ""),
             "observed_at": int(row.get("observed_at") or 0),
         })
+    current = payload.get("current")
+    if not isinstance(current, dict):
+        current = {}
     return {
         "available": True,
+        "user_id": int(payload.get("user_id") or 0),
+        "current": {
+            "username": str(current.get("username") or ""),
+            "full_name": str(current.get("full_name") or ""),
+            "about": str(current.get("about") or ""),
+            "observed_at": int(current.get("last_seen_at") or current.get("observed_at") or 0),
+        } if current else {},
         "total": int(payload.get("history_total") or len(history)),
         "history": history,
     }
