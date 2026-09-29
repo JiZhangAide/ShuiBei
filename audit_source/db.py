@@ -132,9 +132,21 @@ def ensure_ledger_business_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE ledger ADD COLUMN category TEXT NOT NULL DEFAULT ''")
     if "cost_micro" not in cols:
         conn.execute("ALTER TABLE ledger ADD COLUMN cost_micro INTEGER NOT NULL DEFAULT 0")
+    if "reversal_of" not in cols:
+        conn.execute("ALTER TABLE ledger ADD COLUMN reversal_of INTEGER NOT NULL DEFAULT 0")
+    if "reversed_by" not in cols:
+        conn.execute("ALTER TABLE ledger ADD COLUMN reversed_by INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_ledger_owner_category_time "
         "ON ledger(owner_id,category,time)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_one_reversal "
+        "ON ledger(owner_id,reversal_of) WHERE reversal_of>0"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ledger_reversed_by "
+        "ON ledger(owner_id,reversed_by) WHERE reversed_by>0"
     )
 
 
