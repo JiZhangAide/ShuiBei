@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Public/source-available ShuiBei configuration."""
+"""Configuration for the ShuiBei source-available build."""
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-SOURCE_ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_DIR = Path(__file__).resolve().parent
+SOURCE_ROOT = PACKAGE_DIR.parent
+BASE_DIR = PACKAGE_DIR
 
 
 def _load_local_env() -> None:
@@ -44,24 +46,34 @@ def _admin_ids() -> tuple[int, ...]:
 
 _load_local_env()
 
-BASE_DIR = Path(
-    os.environ.get("SHUIBEI_DATA_DIR")
-    or os.environ.get("SHUIBEI_AUDIT_STATE_DIR")
-    or (SOURCE_ROOT / "runtime-data")
-).resolve()
+DATA_DIR = Path(os.environ.get("SHUIBEI_DATA_DIR") or (SOURCE_ROOT / "runtime-data")).resolve()
 
 BOT_TOKEN = str(os.environ.get("SHUIBEI_BOT_TOKEN") or "").strip()
-BOT_USERNAME = str(os.environ.get("SHUIBEI_BOT_USERNAME") or "@ShuiBei_bot").strip()
+BOT_USERNAME = str(os.environ.get("SHUIBEI_BOT_USERNAME") or "").strip()
 BOT_DISPLAY_NAME = "水杯记账"
+SHUIBEI_ADMIN_USER_IDS: tuple[int, ...] = _admin_ids()
 
-LEDGER_DB_PATH = BASE_DIR / "ledger.db"
-APP_DB_PATH = BASE_DIR / "shuibei.db"
-ARCHIVE_DB_PATH = BASE_DIR / "archive.db"
-SYNC_DB_PATH = BASE_DIR / "sync.db"
-MESSAGE_PROTECTION_KEY_PATH = BASE_DIR / ".message_protection_key"
+MINIAPP_URL = str(os.environ.get("SHUIBEI_MINIAPP_URL") or "").strip()
+MINIAPP_HOST = str(os.environ.get("SHUIBEI_MINIAPP_HOST") or "127.0.0.1").strip()
+try:
+    MINIAPP_PORT = int(os.environ.get("SHUIBEI_MINIAPP_PORT") or 8080)
+except Exception:
+    MINIAPP_PORT = 8080
+
+LEDGER_DB_PATH = DATA_DIR / "ledger.db"
+APP_DB_PATH = DATA_DIR / "shuibei.db"
+ARCHIVE_DB_PATH = DATA_DIR / "archive.db"
+SYNC_DB_PATH = DATA_DIR / "sync.db"
+MESSAGE_PROTECTION_KEY_PATH = DATA_DIR / ".message_protection_key"
 MESSAGE_PROTECTION_TTL_SECONDS = 7 * 86400
-CHANNEL_VERIFIER_TOKEN_PATH = BASE_DIR / ".channel_verifier_token"
-MAIN_LEDGER_DB_PATH = BASE_DIR / ".moqing-private-main-ledger-unavailable"
+CHANNEL_VERIFIER_TOKEN_PATH = DATA_DIR / ".channel_verifier_token"
+
+_main_ledger_env = str(os.environ.get("SHUIBEI_MAIN_LEDGER_DB") or "").strip()
+MAIN_LEDGER_DB_PATH = (
+    Path(_main_ledger_env).resolve()
+    if _main_ledger_env
+    else (DATA_DIR / ".main-ledger-unavailable")
+)
 
 REQUIRED_CHANNEL = "@jizhangaide"
 REQUIRED_CHANNEL_URL = "https://t.me/jizhangaide"
@@ -71,9 +83,7 @@ MEMBERSHIP_REFERRAL_TTL_SECONDS = 3 * 86400
 MEMBERSHIP_REMINDER_SECONDS = 2 * 86400
 MEMBERSHIP_7D_USDT = "3"
 MEMBERSHIP_30D_USDT = "6.66"
-SHUIBEI_ADMIN_USER_IDS: tuple[int, ...] = _admin_ids()
 
-# Public MoQing Developer API used only by the source-available build.
 DEVELOPER_API_BASE = "https://api.jizhang.org"
 DEVELOPER_SCAM_API_PATH = "/api/v1/fanzha/records"
 DEVELOPER_FAKEBOT_API_PATH = "/api/v1/fakebot/check"
@@ -102,7 +112,7 @@ ALLOWED_CURRENCIES = ("USDT", "USDC", "TRX", "CNY", "TON", "PEP")
 SYNC_DEFAULT_ENABLED = 0
 RISK_ALERT_COOLDOWN_SECONDS = 3600
 FAKEBOT_ALERT_COOLDOWN_SECONDS = 600
-OFFSET_FILE = BASE_DIR / ".updates_offset"
-LOCK_FILE = BASE_DIR / ".shuibei.lock"
-PID_FILE = BASE_DIR / ".shuibei.pid"
-LOG_FILE = BASE_DIR / "shuibei.log"
+OFFSET_FILE = DATA_DIR / ".updates_offset"
+LOCK_FILE = DATA_DIR / ".shuibei.lock"
+PID_FILE = DATA_DIR / ".shuibei.pid"
+LOG_FILE = DATA_DIR / "shuibei.log"
