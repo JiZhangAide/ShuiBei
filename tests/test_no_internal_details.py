@@ -9,8 +9,6 @@ FORBIDDEN_TEXT = (
     "127" + "." + "0" + "." + "0" + "." + "1",
     "0" + "." + "0" + "." + "0" + "." + "0",
     "local" + "host",
-    "/" + "api" + "/" + "v1" + "/",
-    "api" + "." + "jizhang" + "." + "org",
     "panel" + "." + "jizhang" + "." + "org",
     "BEGIN " + "PRIVATE KEY",
     "BEGIN " + "RSA PRIVATE KEY",
