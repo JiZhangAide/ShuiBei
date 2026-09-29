@@ -2,9 +2,11 @@
 from __future__ import annotations
 import re
 try:
-    from .moqing_gateway import MoQingGatewayError, current_gateway
+    from .config import DEVELOPER_SCAM_API_PATH
+    from .developer_api import DeveloperAPIUnavailable, get_json
 except ImportError:
-    from moqing_gateway import MoQingGatewayError, current_gateway
+    from config import DEVELOPER_SCAM_API_PATH
+    from developer_api import DeveloperAPIUnavailable, get_json
 
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,32}$")
 _ID_RE = re.compile(r"^\d{6,15}$")
@@ -23,8 +25,8 @@ def query_records(value: str) -> tuple[bool, list[dict]]:
     if not key: return True, []
     query = key if key.isdigit() else "@" + key
     try:
-        payload = current_gateway().antifraud_records(query)
-    except MoQingGatewayError:
+        payload = get_json(DEVELOPER_SCAM_API_PATH, params={"query": query})
+    except DeveloperAPIUnavailable:
         return False, []
     if str(payload.get("detail") or "") == "invalid_query": return True, []
     rows = payload.get("records")
