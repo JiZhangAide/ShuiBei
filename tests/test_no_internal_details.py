@@ -95,6 +95,7 @@ def test_only_documented_public_developer_routes_are_exposed():
     assert routes == {
         '"/api/v1/fanzha/records"',
         '"/api/v1/fakebot/check"',
+        '"/api/v1/telegram/profile/history"',
     }
 
 
