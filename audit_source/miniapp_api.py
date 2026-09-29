@@ -27,6 +27,26 @@ from receivables import (
 )
 from telegram_api import TelegramAPI
 from miniapp_auth import validate_init_data
+from advanced_ledger import (
+    apply_template,
+    book_overview,
+    create_book,
+    create_close_snapshot,
+    create_recurring_receivable,
+    create_template,
+    customer_summary,
+    customer_timeline,
+    entry_meta_map,
+    list_books,
+    list_close_snapshots,
+    list_recurring,
+    list_templates,
+    process_due_recurring,
+    reverse_entry,
+    set_entry_meta,
+    set_recurring_active,
+    trend_series,
+)
 
 BUILD = "shuibei-miniapp-v3-security-20260927"
 
@@ -119,6 +139,7 @@ def _ledger_rows(owner_id: int, peer_id: int, limit: int = 30) -> list[dict]:
         ).fetchall()
     finally:
         conn.close()
+    meta = entry_meta_map(int(owner_id), [int(r["id"]) for r in rows])
     return [{
         "id": int(r["id"]),
         "time": str(r["time"] or ""),
@@ -128,6 +149,11 @@ def _ledger_rows(owner_id: int, peer_id: int, limit: int = 30) -> list[dict]:
         "remark": str(r["remark"] or ""),
         "category": str(r["category"] or ""),
         "cost_micro": max(0, int(r["cost_micro"] or 0)),
+        "book_id": int(meta.get(int(r["id"]), {}).get("book_id") or 0),
+        "status": str(meta.get(int(r["id"]), {}).get("status") or "posted"),
+        "reversal_of": int(meta.get(int(r["id"]), {}).get("reversal_of") or 0),
+        "source_message_id": int(meta.get(int(r["id"]), {}).get("source_message_id") or 0),
+        "attachment_ref": str(meta.get(int(r["id"]), {}).get("attachment_ref") or ""),
     } for r in rows]
 
 
@@ -146,6 +172,7 @@ def _miniapp_add_ledger(
     *,
     category: str = "",
     cost_micro: int = 0,
+    book_id: int = 0,
 ) -> dict:
     amount = int(amount_micro or 0)
     if amount <= 0 or amount > 10**15:
@@ -168,7 +195,7 @@ def _miniapp_add_ledger(
         cat = ""
         cost = 0
 
-    canonical = [int(owner_id), int(peer_id), kind, amount, str(remark or "")[:500], cat, cost]
+    canonical = [int(owner_id), int(peer_id), kind, amount, str(remark or "")[:500], cat, cost, int(book_id or 0)]
     request_hash = hashlib.sha256(json.dumps(canonical, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
     _ensure_miniapp_ledger_schema()
     with tx(LEDGER_DB_PATH, immediate=True) as conn:
@@ -214,6 +241,7 @@ def _miniapp_add_ledger(
             "category": cat,
             "cost_micro": cost,
             "gross_profit_micro": (amount - cost) if kind == "debt" else 0,
+            "book_id": int(book_id or 0),
             "currency": currency(owner_id),
         }
         conn.execute(
@@ -224,6 +252,7 @@ def _miniapp_add_ledger(
             "DELETE FROM miniapp_idempotency WHERE owner_id=? AND created_at<?",
             (int(owner_id), int(time.time()) - 7 * 86400),
         )
+    set_entry_meta(int(owner_id), int(result["id"]), book_id=int(book_id or 0), status="posted")
     return result
 
 
@@ -320,12 +349,17 @@ def register_shuibei_miniapp(app, *, static_dir: str):
             },
             "currency": currency(int(a.user_id)),
             "categories": list(BUSINESS_CATEGORIES),
+            "books": list_books(int(a.user_id)),
         })
 
     @bp.route("/api/miniapp/v1/home")
     @_auth_required
     def home():
         uid = int(g.shuibei_auth.user_id)
+        try:
+            process_due_recurring(uid, max_runs=20)
+        except Exception:
+            pass
         sm = merchant_summary(uid)
         day = report_summary(uid, "day")
         overdue = due_customers(uid, "overdue", limit=50)
@@ -398,6 +432,7 @@ def register_shuibei_miniapp(app, *, static_dir: str):
                 str(body.get("idempotency_key") or ""),
                 category=str(body.get("category") or ""),
                 cost_micro=int(body.get("cost_micro") or 0),
+                book_id=int(body.get("book_id") or 0),
             )
             return _ok(result)
         except ValueError as exc:
@@ -563,6 +598,173 @@ def register_shuibei_miniapp(app, *, static_dir: str):
         if mode not in {"day", "week", "month"}:
             return _fail("报表周期无效", 400)
         return _ok(report_summary(int(g.shuibei_auth.user_id), mode))
+
+
+    @bp.route("/api/miniapp/v1/books", methods=["GET", "POST"])
+    @_auth_required
+    def advanced_books():
+        uid = int(g.shuibei_auth.user_id)
+        if request.method == "GET":
+            return _ok(list_books(uid))
+        body = request.get_json(silent=True) or {}
+        try:
+            return _ok(create_book(uid, str(body.get("name") or "")), 201)
+        except ValueError as exc:
+            return _fail(str(exc), 400)
+
+    @bp.route("/api/miniapp/v1/books/overview")
+    @_auth_required
+    def advanced_books_overview():
+        return _ok(book_overview(int(g.shuibei_auth.user_id)))
+
+    @bp.route("/api/miniapp/v1/templates", methods=["GET", "POST"])
+    @_auth_required
+    def advanced_templates():
+        uid = int(g.shuibei_auth.user_id)
+        if request.method == "GET":
+            return _ok(list_templates(uid, peer_id=int(request.args.get("peer_id") or 0)))
+        body = request.get_json(silent=True) or {}
+        try:
+            row = create_template(
+                uid,
+                str(body.get("name") or ""),
+                kind=str(body.get("kind") or ""),
+                amount_micro=int(body.get("amount_micro") or 0),
+                peer_id=int(body.get("peer_id") or 0),
+                book_id=int(body.get("book_id") or 0),
+                remark=str(body.get("remark") or ""),
+                category=str(body.get("category") or ""),
+                cost_micro=int(body.get("cost_micro") or 0),
+            )
+            return _ok(row, 201)
+        except ValueError as exc:
+            return _fail(str(exc), 400)
+
+    @bp.route("/api/miniapp/v1/templates/<int:template_id>/apply", methods=["POST"])
+    @_financial_auth_required
+    def advanced_template_apply(template_id: int):
+        uid = int(g.shuibei_auth.user_id)
+        body = request.get_json(silent=True) or {}
+        try:
+            return _ok(apply_template(uid, template_id, peer_id=int(body.get("peer_id") or 0)))
+        except ValueError as exc:
+            return _fail(str(exc), 400)
+
+    @bp.route("/api/miniapp/v1/recurring", methods=["GET", "POST"])
+    @_auth_required
+    def advanced_recurring():
+        uid = int(g.shuibei_auth.user_id)
+        if request.method == "GET":
+            process_due_recurring(uid, max_runs=20)
+            return _ok(list_recurring(uid, peer_id=int(request.args.get("peer_id") or 0), active_only=False))
+        body = request.get_json(silent=True) or {}
+        try:
+            row = create_recurring_receivable(
+                uid,
+                int(body.get("peer_id") or 0),
+                title=str(body.get("title") or ""),
+                amount_micro=int(body.get("amount_micro") or 0),
+                cadence=str(body.get("cadence") or ""),
+                next_due_at=int(body.get("next_due_at") or 0),
+                book_id=int(body.get("book_id") or 0),
+                remark=str(body.get("remark") or ""),
+                category=str(body.get("category") or ""),
+                cost_micro=int(body.get("cost_micro") or 0),
+            )
+            return _ok(row, 201)
+        except ValueError as exc:
+            return _fail(str(exc), 400)
+
+    @bp.route("/api/miniapp/v1/recurring/<int:recurring_id>/active", methods=["POST"])
+    @_auth_required
+    def advanced_recurring_active(recurring_id: int):
+        uid = int(g.shuibei_auth.user_id)
+        body = request.get_json(silent=True) or {}
+        return _ok({"updated": bool(set_recurring_active(uid, recurring_id, bool(body.get("active"))))})
+
+    @bp.route("/api/miniapp/v1/recurring/process", methods=["POST"])
+    @_financial_auth_required
+    def advanced_recurring_process():
+        uid = int(g.shuibei_auth.user_id)
+        return _ok({"created": process_due_recurring(uid, max_runs=50)})
+
+    @bp.route("/api/miniapp/v1/customers/<int:peer_id>/summary")
+    @_auth_required
+    def advanced_customer_summary(peer_id: int):
+        try:
+            return _ok(customer_summary(int(g.shuibei_auth.user_id), peer_id))
+        except ValueError as exc:
+            return _fail(str(exc), 404)
+
+    @bp.route("/api/miniapp/v1/customers/<int:peer_id>/timeline")
+    @_auth_required
+    def advanced_customer_timeline(peer_id: int):
+        return _ok(customer_timeline(
+            int(g.shuibei_auth.user_id),
+            peer_id,
+            limit=int(request.args.get("limit") or 30),
+        ))
+
+    @bp.route("/api/miniapp/v1/ledger/<int:ledger_id>/reverse", methods=["POST"])
+    @_financial_auth_required
+    def advanced_reverse(ledger_id: int):
+        uid = int(g.shuibei_auth.user_id)
+        body = request.get_json(silent=True) or {}
+        try:
+            return _ok(reverse_entry(uid, ledger_id, remark=str(body.get("remark") or "")))
+        except ValueError as exc:
+            return _fail(str(exc), 409)
+
+    @bp.route("/api/miniapp/v1/ledger/<int:ledger_id>/meta", methods=["PATCH"])
+    @_auth_required
+    def advanced_entry_meta(ledger_id: int):
+        uid = int(g.shuibei_auth.user_id)
+        body = request.get_json(silent=True) or {}
+        try:
+            return _ok(set_entry_meta(
+                uid,
+                ledger_id,
+                book_id=body.get("book_id") if "book_id" in body else None,
+                status=body.get("status") if "status" in body else None,
+                source_message_id=body.get("source_message_id") if "source_message_id" in body else None,
+                attachment_ref=body.get("attachment_ref") if "attachment_ref" in body else None,
+            ))
+        except ValueError as exc:
+            return _fail(str(exc), 400)
+
+    @bp.route("/api/miniapp/v1/snapshots", methods=["GET", "POST"])
+    @_auth_required
+    def advanced_snapshots():
+        uid = int(g.shuibei_auth.user_id)
+        if request.method == "GET":
+            return _ok(list_close_snapshots(uid, limit=int(request.args.get("limit") or 12)))
+        body = request.get_json(silent=True) or {}
+        try:
+            return _ok(create_close_snapshot(uid, str(body.get("period") or "")), 201)
+        except ValueError as exc:
+            return _fail(str(exc), 400)
+
+    @bp.route("/api/miniapp/v1/reports/trend")
+    @_auth_required
+    def advanced_trend():
+        uid = int(g.shuibei_auth.user_id)
+        book_raw = request.args.get("book_id")
+        book_id = None if book_raw in (None, "") else int(book_raw)
+        start_raw = str(request.args.get("start") or "").strip()
+        end_raw = str(request.args.get("end") or "").strip()
+        start_ts = end_ts = 0
+        if start_raw or end_raw:
+            try:
+                start_ts, end_ts = _query_date_range(start_raw, end_raw)
+            except ValueError as exc:
+                return _fail(str(exc), 400)
+        return _ok(trend_series(
+            uid,
+            days=int(request.args.get("days") or 30),
+            start_ts=start_ts,
+            end_ts=end_ts,
+            book_id=book_id,
+        ))
 
     app.register_blueprint(bp)
     return bp
