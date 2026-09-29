@@ -60,7 +60,7 @@ def _text_files():
     for path in ROOT.rglob("*"):
         if not path.is_file() or ".git" in path.parts:
             continue
-        if path.suffix.lower() in {".py", ".md", ".txt", ".json", ".yml", ".yaml"}:
+        if path.suffix.lower() in {".py", ".md", ".txt", ".json", ".yml", ".yaml", ".js", ".html", ".css", ".example"}:
             yield path
 
 
