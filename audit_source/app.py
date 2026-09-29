@@ -726,6 +726,13 @@ def _v21_send_scam_result(api: TelegramAPI, chat_id: int, target: str) -> None:
     api.send_message(chat_id, scam_result_html(target, ok, rows))
 
 
+def _v21_identity_query_text(target: str) -> str:
+    """Direct @username / Telegram ID query: profile history + antifraud."""
+    profile = _r29_profile_history_text(str(target or "").strip()) if "_r29_profile_history_text" in globals() else "🗒 历史资料：暂不可用"
+    ok, rows = query_records(target)
+    return profile + "\n\n" + scam_result_html(target, ok, rows)
+
+
 
 def _v21_wait_input(api: TelegramAPI, owner_id: int, chat_id: int, text: str) -> bool:
     state = wait_get(owner_id)
@@ -920,7 +927,7 @@ def _private_command(api: TelegramAPI, message: dict) -> bool:
     if rate_hit:
         api.send_message(chat_id, rate_text or _ui_notice("unknown", "汇率暂不可用", "实时汇率暂时无法获取，请稍后重试。")); return True
     if looks_like_scam_target(text):
-        _v21_send_scam_result(api, chat_id, text); return True
+        api.send_message(chat_id, _v21_identity_query_text(text)); return True
 
     handled, reply, export = handle_ledger_text(owner_id, 0, user_name, text)
     if handled:
@@ -1668,8 +1675,7 @@ def _r29_time(ts: int) -> str:
         return "暂无记录"
 
 
-def _r29_profile_history_text(peer_id: int) -> str:
-    data = customer_profile_history(int(peer_id), 6)
+def _r29_profile_history_from_data(data: dict) -> str:
     if not bool(data.get("available")):
         return "🗒 历史资料：暂不可用"
     rows = list(data.get("history") or [])
@@ -1705,6 +1711,10 @@ def _r29_profile_history_text(peer_id: int) -> str:
             "<blockquote expandable>" + "\n".join(hidden) + "</blockquote>",
         ])
     return "\n".join(lines)
+
+
+def _r29_profile_history_text(target: int | str) -> str:
+    return _r29_profile_history_from_data(customer_profile_history(target, 6))
 
 
 def _r29_home_text(owner_id: int) -> str:
@@ -1880,20 +1890,42 @@ def _r29_customer_detail_keyboard(owner_id: int, peer_id: int):
     return {"inline_keyboard":rows}
 
 
+def _r29_business_manage_text(owner_id: int, peer_id: int) -> str:
+    """Render Telegram Business context even before ShuiBei has indexed the customer locally."""
+    oid, pid = int(owner_id), int(peer_id)
+    d = customer_detail(oid, pid)
+    if d:
+        base = _r29_customer_detail_text(oid, pid, title="当前 Business 客户")
+    else:
+        pdata = customer_profile_history(pid, 6)
+        current = pdata.get("current") if isinstance(pdata.get("current"), dict) else {}
+        history = list(pdata.get("history") or [])
+        snapshot = current or (history[0] if history else {})
+        username = str(snapshot.get("username") or "").strip().lstrip("@")
+        full_name = str(snapshot.get("full_name") or "").strip()
+        base = "\n".join([
+            _ui_title("user", "当前 Business 客户", "👤"),
+            "",
+            _ui_field("客户", full_name or "未收录昵称"),
+            _ui_field("用户名", ("@" + username) if username else "-"),
+            _ui_field("Telegram ID", str(pid)),
+            "",
+            _r29_profile_history_from_data(pdata),
+        ])
+    ok, rows = query_records(str(pid))
+    return base + "\n\n" + scam_result_html(str(pid), ok, rows)
+
+
 def _r29_business_manage_start(api: TelegramAPI, owner_id: int, chat_id: int, peer_id: int) -> bool:
-    """Open only an owner-scoped known Business customer from Telegram's bizChat deep link."""
+    """Open the Telegram-provided bizChat user directly; local CRM rows are optional."""
     d = customer_detail(int(owner_id), int(peer_id))
-    if not d or not bool(d.get("has_business")):
-        api.send_message(
-            int(chat_id),
-            _ui_notice("unknown", "客户资料暂未建立", "请先在该 Telegram Business 会话中产生一条消息后再打开管理机器人。"),
-            reply_markup=main_keyboard(int(owner_id), "home"),
-        )
-        return True
+    markup = _r29_customer_detail_keyboard(int(owner_id), int(peer_id)) if d else {
+        "inline_keyboard": [[button("返回首页", "menu:home", icon_custom_emoji_id=premium_icon("back"), style="primary")]]
+    }
     api.send_message(
         int(chat_id),
-        _r29_customer_detail_text(int(owner_id), int(peer_id), title="当前 Business 客户"),
-        reply_markup=_r29_customer_detail_keyboard(int(owner_id), int(peer_id)),
+        _r29_business_manage_text(int(owner_id), int(peer_id)),
+        reply_markup=markup,
     )
     return True
 
