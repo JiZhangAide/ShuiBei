@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -14,6 +15,24 @@ _DB_LOCK = threading.RLock()
 _SCHEMA_READY: set[tuple[str, str]] = set()
 _WAL_READY: dict[str, tuple[int, int]] = {}
 _DB_GENERATION: dict[str, int] = {}
+
+
+_DB_PERMISSION_WARNED: set[str] = set()
+
+
+def _strict_db_permissions() -> bool:
+    raw = os.environ.get("SHUIBEI_STRICT_DB_PERMISSIONS")
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _db_permission_failure(path: Path, reason: str) -> None:
+    message = f"[ShuiBei][SECURITY] database permission hardening failed for {path}: {reason}"
+    if _strict_db_permissions():
+        raise PermissionError(message)
+    key = str(path)
+    if key not in _DB_PERMISSION_WARNED:
+        _DB_PERMISSION_WARNED.add(key)
+        print(message, file=sys.stderr, flush=True)
 
 
 def _file_identity(path: Path | str) -> tuple[int, int] | None:
@@ -36,19 +55,24 @@ def _is_local_private_db(path: Path | str) -> bool:
 
 
 def _harden_local_db_mode(path: Path | str) -> None:
-    """只收紧水杯自己的数据库权限，不触碰主机器人共享数据库内容/权限。"""
+    """Require owner-only permissions for ShuiBei-owned SQLite databases."""
     if not _is_local_private_db(path):
         return
+    p = Path(path)
     try:
-        p = Path(path)
         st = p.stat()
         if hasattr(os, "geteuid") and int(st.st_uid) != int(os.geteuid()):
+            _db_permission_failure(p, "database file owner does not match the running user")
             return
         if (st.st_mode & 0o077) != 0:
             os.chmod(p, 0o600)
-    except Exception:
-        # 权限硬化失败不应破坏业务可用性；部署审计会单独提示。
-        pass
+            st = p.stat()
+        if (st.st_mode & 0o077) != 0:
+            _db_permission_failure(p, f"mode remained {oct(st.st_mode & 0o777)} instead of 0o600")
+    except PermissionError:
+        raise
+    except Exception as exc:
+        _db_permission_failure(p, f"{type(exc).__name__}: {str(exc)[:200]}")
 
 
 def _schema_key(kind: str, path: Path | str) -> tuple[str, str]:
@@ -95,8 +119,13 @@ def connect(path: Path | str, timeout: float = 30.0, readonly: bool = False) -> 
     return conn
 
 
+def ledger_hot_locks(owner_id: int, peer_id: int):
+    """SQLite compatibility shim; BEGIN IMMEDIATE provides the local write lock."""
+    return ()
+
+
 @contextmanager
-def tx(path: Path | str, immediate: bool = False):
+def tx(path: Path | str, immediate: bool = False, *, pg_locks=()):
     conn = connect(path)
     try:
         conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
@@ -212,6 +241,21 @@ def init_ledger_db(path: Path | str = LEDGER_DB_PATH) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_miniapp_idempotency_created
             ON miniapp_idempotency(owner_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS ledger_projection_outbox(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id INTEGER NOT NULL,
+            event_key TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            applied_at INTEGER NOT NULL DEFAULT 0,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT NOT NULL DEFAULT '',
+            UNIQUE(owner_id,event_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ledger_projection_outbox_pending
+            ON ledger_projection_outbox(applied_at,owner_id,id);
         """)
             # Older deployments may already have the MiniApp table without request_hash.
             mini_cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(miniapp_idempotency)").fetchall()}
