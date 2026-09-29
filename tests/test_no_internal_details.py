@@ -99,6 +99,14 @@ def test_only_documented_public_developer_routes_are_exposed():
     }
 
 
+def test_direct_identity_and_business_context_queries_are_wired():
+    app_text = (ROOT / "audit_source" / "app.py").read_text(encoding="utf-8")
+    assert "api.send_message(chat_id, _v21_identity_query_text(text)); return True" in app_text
+    assert "def _r29_business_manage_text(" in app_text
+    assert "_r29_profile_history_from_data(pdata)" in app_text
+    assert "客户资料暂未建立" not in app_text
+
+
 def test_public_runtime_binds_loopback_by_default():
     config_text = (ROOT / "audit_source" / "config.py").read_text(encoding="utf-8")
     assert 'SHUIBEI_MINIAPP_HOST") or "127.0.0.1"' in config_text
