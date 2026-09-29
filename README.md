@@ -117,9 +117,11 @@ python -m audit_source all
 
 - `GET https://api.jizhang.org/api/v1/fanzha/records`
 - `GET https://api.jizhang.org/api/v1/fakebot/check`
-- `GET https://api.jizhang.org/api/v1/telegram/profile/history`：用于已建立 Business 客户的公开资料历史；当前为 Pro Developer API 能力，50 Credits / 次。
+- `GET https://api.jizhang.org/api/v1/telegram/profile/history`：用于 Telegram 用户公开资料历史；当前为 Pro Developer API 能力，50 Credits / 次。
 
-Telegram Business 的“管理机器人”入口支持 `/start bizChat<user_id>`：只会打开当前 owner 已建立的 Business 客户档案，不接受借此查询任意用户。客户档案中的公开资料历史默认直接展示最新一条，更早记录使用 Telegram 可展开引用折叠。
+私聊 Bot 直接发送 `@username`、`username` 或 Telegram 数字 ID，会同时展示公开资料历史与反诈查询结果。资料历史默认直接展示最新一条，更早记录使用 Telegram 可展开引用折叠。
+
+Telegram Business 的“管理机器人”入口支持 `/start bizChat<user_id>`：直接查询 Telegram 提供的当前客户 ID，不再要求水杯本地 CRM 预先建立该客户；若本地已有客户账务，则会同时附加账务信息。
 
 没有 Developer API Key、Key 权限不足或 API 暂时不可用时，Bot 本身仍然可以启动和使用本地记账/客户/应收等功能；依赖墨清数据的资料历史、反诈和 FakeBot 能力会降级为不可用提示。
 
