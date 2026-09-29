@@ -1,6 +1,11 @@
-# ShuiBei / 水杯记账
+# 水杯记账（ShuiBei）— Telegram 记账机器人
 
-水杯记账是墨清体系中的轻量记账机器人。本仓库提供 **source-available 公开审计与自部署版本**：核心业务代码、SQLite 数据层、Telegram Bot、MiniApp 前后端和公开 Developer API 客户端都可直接运行；生产凭据、生产 PostgreSQL 接线、私有 MoQing runtime、部署拓扑与私有支付接线不随仓库分发。
+> **项目定位：水杯记账（ShuiBei）是一个 Telegram 记账机器人（bookkeeping bot）。**
+> 它的核心用途是记账、客户往来管理、应收/预付款管理、对账和经营报表。MiniApp 是这个记账机器人的配套界面。
+>
+> 水杯记账**不是**加密货币钱包、交易所、支付网关，也不是通用 TRON/TON 链上工具。TRON / USDT、TON、汇率、反诈等能力只是服务于记账场景的辅助功能。
+
+水杯记账属于墨清体系。本仓库提供 **source-available 公开审计与自部署版本**：核心记账业务代码、SQLite 数据层、Telegram Bot、MiniApp 前后端和公开 Developer API 客户端都可直接运行；生产凭据、生产 PostgreSQL 接线、私有 MoQing runtime、部署拓扑与私有支付接线不随仓库分发。
 
 ## 快速启动
 
