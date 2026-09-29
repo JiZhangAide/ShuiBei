@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from config import APP_DB_PATH, LEDGER_DB_PATH
-from db import connect, db_generation, init_app_db, init_ledger_db, tx
+from db import connect, db_generation, init_app_db, init_ledger_db, ledger_hot_locks, tx
 
 _SCHEMA_LOCK = threading.RLock()
 _SCHEMA_GENERATION = -1
@@ -151,13 +151,278 @@ def ensure_schema() -> None:
                     kind TEXT NOT NULL,
                     ref_id INTEGER NOT NULL DEFAULT 0,
                     payload_json TEXT NOT NULL DEFAULT '{}',
+                    projection_key TEXT NOT NULL DEFAULT '',
                     created_at INTEGER NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_customer_timeline_owner_peer
                     ON customer_timeline_events(owner_id,peer_id,created_at,id);
+
+                CREATE TABLE IF NOT EXISTS customer_bookkeeping_profile(
+                    owner_id INTEGER NOT NULL,
+                    peer_id INTEGER NOT NULL,
+                    alias TEXT NOT NULL DEFAULT '',
+                    pinned INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(owner_id,peer_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_customer_bookkeeping_pinned
+                    ON customer_bookkeeping_profile(owner_id,pinned,updated_at);
+
+                CREATE TABLE IF NOT EXISTS bookkeeping_goals(
+                    owner_id INTEGER NOT NULL,
+                    period_key TEXT NOT NULL,
+                    target_micro INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(owner_id,period_key)
+                );
                 """
             )
+            timeline_cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(customer_timeline_events)").fetchall()}
+            if "projection_key" not in timeline_cols:
+                conn.execute(
+                    "ALTER TABLE customer_timeline_events ADD COLUMN projection_key TEXT NOT NULL DEFAULT ''"
+                )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_timeline_projection_key "
+                "ON customer_timeline_events(owner_id,projection_key) WHERE projection_key<>''"
+            )
         _SCHEMA_GENERATION = db_generation(APP_DB_PATH) or generation
+
+
+def enqueue_projection_event(conn, owner_id: int, event_key: str, event_type: str, payload: dict) -> None:
+    """Persist an APP_DB projection request in the same transaction as ledger truth."""
+    key = str(event_key or "").strip()[:160]
+    kind = str(event_type or "").strip()[:80]
+    if not key or not kind:
+        raise ValueError("projection event is invalid")
+    conn.execute(
+        """INSERT INTO ledger_projection_outbox(
+               owner_id,event_key,event_type,payload_json,created_at,applied_at,attempts,last_error
+           ) VALUES(?,?,?,?,?,0,0,'')
+           ON CONFLICT(owner_id,event_key) DO NOTHING""",
+        (
+            int(owner_id),
+            key,
+            kind,
+            json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":")),
+            int(time.time()),
+        ),
+    )
+
+
+def _upsert_projection_meta(
+    conn,
+    owner_id: int,
+    ledger_id: int,
+    *,
+    book_id: int = 0,
+    status: str = "posted",
+    reversal_of: int = 0,
+    source_message_id: int = 0,
+    attachment_ref: str = "",
+    now: int,
+) -> None:
+    oid, lid = int(owner_id), int(ledger_id)
+    old = conn.execute(
+        "SELECT * FROM ledger_entry_meta WHERE owner_id=? AND ledger_id=?",
+        (oid, lid),
+    ).fetchone()
+    old_d = _row_dict(old)
+    created = int(old_d.get("created_at") or now)
+    final_book = int(book_id if int(book_id or 0) > 0 else int(old_d.get("book_id") or 0))
+    final_source = int(
+        source_message_id
+        if int(source_message_id or 0) > 0
+        else int(old_d.get("source_message_id") or 0)
+    )
+    final_attachment = str(attachment_ref or old_d.get("attachment_ref") or "")[:500]
+    conn.execute(
+        """INSERT INTO ledger_entry_meta(
+               owner_id,ledger_id,book_id,status,reversal_of,source_message_id,attachment_ref,created_at,updated_at
+           ) VALUES(?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(owner_id,ledger_id) DO UPDATE SET
+             book_id=excluded.book_id,status=excluded.status,reversal_of=excluded.reversal_of,
+             source_message_id=excluded.source_message_id,attachment_ref=excluded.attachment_ref,
+             updated_at=excluded.updated_at""",
+        (
+            oid,
+            lid,
+            final_book,
+            str(status or "posted"),
+            max(0, int(reversal_of or 0)),
+            final_source,
+            final_attachment,
+            created,
+            int(now),
+        ),
+    )
+
+
+def _insert_projection_timeline(
+    conn,
+    owner_id: int,
+    peer_id: int,
+    *,
+    kind: str,
+    ref_id: int,
+    payload: dict,
+    projection_key: str,
+    created_at: int,
+) -> None:
+    conn.execute(
+        """INSERT OR IGNORE INTO customer_timeline_events(
+               owner_id,peer_id,kind,ref_id,payload_json,projection_key,created_at
+           ) VALUES(?,?,?,?,?,?,?)""",
+        (
+            int(owner_id),
+            int(peer_id),
+            str(kind or "event")[:40],
+            max(0, int(ref_id or 0)),
+            json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":")),
+            str(projection_key or "")[:160],
+            int(created_at),
+        ),
+    )
+
+
+def _apply_projection_event(owner_id: int, event_key: str, event_type: str, payload: dict, created_at: int) -> None:
+    ensure_schema()
+    oid = int(owner_id)
+    now = int(time.time())
+    with tx(APP_DB_PATH, immediate=True) as conn:
+        if event_type == "entry_created":
+            lid = int(payload.get("ledger_id") or 0)
+            pid = int(payload.get("peer_id") or 0)
+            _upsert_projection_meta(
+                conn,
+                oid,
+                lid,
+                book_id=int(payload.get("book_id") or 0),
+                status=str(payload.get("status") or "posted"),
+                source_message_id=int(payload.get("source_message_id") or 0),
+                attachment_ref=str(payload.get("attachment_ref") or ""),
+                now=now,
+            )
+            _insert_projection_timeline(
+                conn,
+                oid,
+                pid,
+                kind="ledger_created",
+                ref_id=lid,
+                payload={
+                    "ledger_id": lid,
+                    "kind": str(payload.get("kind") or ""),
+                    "amount_micro": int(payload.get("amount_micro") or 0),
+                    "balance_before_micro": int(payload.get("balance_before_micro") or 0),
+                    "balance_after_micro": int(payload.get("balance_after_micro") or 0),
+                    "book_id": int(payload.get("book_id") or 0),
+                    "status": str(payload.get("status") or "posted"),
+                },
+                projection_key=event_key,
+                created_at=created_at,
+            )
+            return
+
+        if event_type == "entry_reversed":
+            original_id = int(payload.get("original_ledger_id") or 0)
+            reversal_id = int(payload.get("reversal_ledger_id") or 0)
+            pid = int(payload.get("peer_id") or 0)
+            book_id = int(payload.get("book_id") or 0)
+            _upsert_projection_meta(
+                conn,
+                oid,
+                original_id,
+                status="reversed",
+                now=now,
+            )
+            _upsert_projection_meta(
+                conn,
+                oid,
+                reversal_id,
+                book_id=book_id,
+                status="posted",
+                reversal_of=original_id,
+                now=now,
+            )
+            _insert_projection_timeline(
+                conn,
+                oid,
+                pid,
+                kind="ledger_reversed",
+                ref_id=reversal_id,
+                payload={
+                    "original_ledger_id": original_id,
+                    "reversal_ledger_id": reversal_id,
+                    "amount_micro": int(payload.get("amount_micro") or 0),
+                },
+                projection_key=event_key,
+                created_at=created_at,
+            )
+            return
+
+        raise ValueError("unknown projection event")
+
+
+def drain_projection_outbox(owner_id: int | None = None, *, limit: int = 100) -> dict:
+    """Best-effort idempotent projection replay. Accounting truth never depends on it."""
+    init_ledger_db()
+    ensure_schema()
+    cap = max(1, min(500, int(limit or 100)))
+    conn = connect(LEDGER_DB_PATH)
+    try:
+        if owner_id is None:
+            rows = conn.execute(
+                """SELECT id,owner_id,event_key,event_type,payload_json,created_at
+                   FROM ledger_projection_outbox
+                   WHERE applied_at=0 ORDER BY id ASC LIMIT ?""",
+                (cap,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT id,owner_id,event_key,event_type,payload_json,created_at
+                   FROM ledger_projection_outbox
+                   WHERE applied_at=0 AND owner_id=? ORDER BY id ASC LIMIT ?""",
+                (int(owner_id), cap),
+            ).fetchall()
+    finally:
+        conn.close()
+
+    applied = 0
+    failed = 0
+    for row in rows:
+        outbox_id = int(row["id"])
+        oid = int(row["owner_id"])
+        key = str(row["event_key"] or "")
+        kind = str(row["event_type"] or "")
+        try:
+            payload = json.loads(str(row["payload_json"] or "{}"))
+            _apply_projection_event(oid, key, kind, payload, int(row["created_at"] or time.time()))
+        except Exception as exc:
+            failed += 1
+            try:
+                with tx(LEDGER_DB_PATH, immediate=True) as lconn:
+                    lconn.execute(
+                        """UPDATE ledger_projection_outbox
+                           SET attempts=attempts+1,last_error=?
+                           WHERE id=? AND applied_at=0""",
+                        (f"{type(exc).__name__}: {str(exc)[:300]}", outbox_id),
+                    )
+            except Exception:
+                pass
+            continue
+        try:
+            with tx(LEDGER_DB_PATH, immediate=True) as lconn:
+                lconn.execute(
+                    """UPDATE ledger_projection_outbox
+                       SET applied_at=?,attempts=attempts+1,last_error=''
+                       WHERE id=?""",
+                    (int(time.time()), outbox_id),
+                )
+            applied += 1
+        except Exception:
+            failed += 1
+
+    return {"seen": len(rows), "applied": applied, "failed": failed}
 
 
 def _book_exists(owner_id: int, book_id: int) -> bool:
@@ -243,6 +508,10 @@ def set_book_archived(owner_id: int, book_id: int, archived: bool) -> bool:
 
 def entry_meta_map(owner_id: int, ledger_ids: list[int] | tuple[int, ...]) -> dict[int, dict]:
     ensure_schema()
+    try:
+        drain_projection_outbox(int(owner_id), limit=100)
+    except Exception:
+        pass
     ids = sorted({int(x) for x in ledger_ids if int(x) > 0})
     if not ids:
         return {}
@@ -356,7 +625,7 @@ def record_entry(
     attachment_ref: str = "",
 ) -> dict:
     from customers import customer_detail
-    from ledger import apply_delta, currency
+    from ledger import currency
 
     oid, pid = int(owner_id), int(peer_id)
     amount = int(amount_micro or 0)
@@ -365,46 +634,72 @@ def record_entry(
     clean_kind = str(kind or "").strip().lower()
     if clean_kind not in {"debt", "payment"}:
         raise ValueError("记账类型无效")
-    if not _book_exists(oid, int(book_id or 0)):
+    clean_status = str(status or "posted").strip().lower()
+    if clean_status not in _ENTRY_STATUSES or clean_status == "reversed":
+        raise ValueError("账目状态无效")
+    bid = int(book_id or 0)
+    if not _book_exists(oid, bid):
         raise ValueError("项目账不存在")
     customer = customer_detail(oid, pid)
     if not customer:
         raise ValueError("客户不存在")
+
     name = str(user_name or customer.get("name") or "客户")
     delta = -amount if clean_kind == "debt" else amount
     action = "出" if clean_kind == "debt" else "入"
-    lid, before, after = apply_delta(
-        oid,
-        pid,
-        name,
-        action,
-        delta,
-        str(remark or "")[:500],
-        category=str(category or "") if clean_kind == "debt" else "",
-        cost_micro=max(0, int(cost_micro or 0)) if clean_kind == "debt" else 0,
-    )
-    meta = set_entry_meta(
-        oid,
-        lid,
-        book_id=int(book_id or 0),
-        status=status,
-        source_message_id=source_message_id,
-        attachment_ref=attachment_ref,
-    )
-    log_customer_event(
-        oid,
-        pid,
-        "ledger_created",
-        {
-            "ledger_id": lid,
-            "kind": clean_kind,
-            "amount_micro": amount,
-            "balance_before_micro": before,
-            "balance_after_micro": after,
-            "book_id": int(book_id or 0),
-        },
-        ref_id=lid,
-    )
+    cat = str(category or "") if clean_kind == "debt" else ""
+    cost = max(0, int(cost_micro or 0)) if clean_kind == "debt" else 0
+    now_s = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+
+    init_ledger_db()
+    with tx(
+        LEDGER_DB_PATH,
+        immediate=True,
+        pg_locks=ledger_hot_locks(oid, pid),
+    ) as conn:
+        row = conn.execute(
+            "SELECT balance_micro FROM ledger WHERE owner_id=? AND peer_id=? ORDER BY id DESC LIMIT 1",
+            (oid, pid),
+        ).fetchone()
+        before = int(row[0] or 0) if row else 0
+        after = before + delta
+        if not -(2**63) <= after <= 2**63 - 1:
+            raise ValueError("余额超出存储范围")
+        cur = conn.execute(
+            """INSERT INTO ledger(
+                   owner_id,peer_id,user_name,action,amount_micro,balance_micro,remark,time,
+                   category,cost_micro,reversal_of,reversed_by
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,0,0)""",
+            (
+                oid, pid, name, action, amount, after, str(remark or "")[:500],
+                now_s, cat, cost,
+            ),
+        )
+        lid = int(cur.lastrowid or 0)
+        enqueue_projection_event(
+            conn,
+            oid,
+            f"ledger:{lid}:created",
+            "entry_created",
+            {
+                "ledger_id": lid,
+                "peer_id": pid,
+                "kind": clean_kind,
+                "amount_micro": amount,
+                "balance_before_micro": before,
+                "balance_after_micro": after,
+                "book_id": bid,
+                "status": clean_status,
+                "source_message_id": max(0, int(source_message_id or 0)),
+                "attachment_ref": str(attachment_ref or "")[:500],
+            },
+        )
+
+    try:
+        drain_projection_outbox(oid, limit=50)
+    except Exception:
+        pass
+
     return {
         "id": lid,
         "peer_id": pid,
@@ -412,8 +707,12 @@ def record_entry(
         "amount_micro": amount,
         "balance_before_micro": before,
         "balance_after_micro": after,
+        "book_id": bid,
+        "status": clean_status,
+        "reversal_of": 0,
+        "source_message_id": max(0, int(source_message_id or 0)),
+        "attachment_ref": str(attachment_ref or "")[:500],
         "currency": currency(oid),
-        **meta,
     }
 
 
@@ -446,10 +745,30 @@ def reverse_entry(owner_id: int, ledger_id: int, *, remark: str = "") -> dict:
     ensure_schema()
     oid, lid = int(owner_id), int(ledger_id)
     init_ledger_db()
+    try:
+        drain_projection_outbox(oid, limit=100)
+    except Exception:
+        pass
     meta = entry_meta_map(oid, [lid]).get(lid, {})
     book_id = int(meta.get("book_id") or 0)
 
-    with tx(LEDGER_DB_PATH, immediate=True) as conn:
+    probe = connect(LEDGER_DB_PATH)
+    try:
+        hint = probe.execute(
+            "SELECT peer_id FROM ledger WHERE owner_id=? AND id=?",
+            (oid, lid),
+        ).fetchone()
+    finally:
+        probe.close()
+    if not hint:
+        raise ValueError("账目不存在")
+    pid_hint = int(hint[0] or 0)
+
+    with tx(
+        LEDGER_DB_PATH,
+        immediate=True,
+        pg_locks=ledger_hot_locks(oid, pid_hint),
+    ) as conn:
         row = conn.execute(
             """SELECT id,peer_id,user_name,action,amount_micro,remark,category,cost_micro,
                       reversal_of,reversed_by
@@ -516,23 +835,22 @@ def reverse_entry(owner_id: int, ledger_id: int, *, remark: str = "") -> dict:
         if int(updated.rowcount or 0) != 1:
             raise ValueError("该账目已经冲正")
 
+        enqueue_projection_event(
+            conn,
+            oid,
+            f"ledger:{lid}:reversed:{rid}",
+            "entry_reversed",
+            {
+                "original_ledger_id": lid,
+                "reversal_ledger_id": rid,
+                "peer_id": pid,
+                "book_id": book_id,
+                "amount_micro": amount,
+            },
+        )
+
     try:
-        set_entry_meta(oid, lid, status="reversed", _internal=True)
-        set_entry_meta(
-            oid,
-            rid,
-            book_id=book_id,
-            status="posted",
-            reversal_of=lid,
-            _internal=True,
-        )
-        log_customer_event(
-            oid,
-            pid,
-            "ledger_reversed",
-            {"original_ledger_id": lid, "reversal_ledger_id": rid, "amount_micro": amount},
-            ref_id=rid,
-        )
+        drain_projection_outbox(oid, limit=50)
     except Exception:
         pass
 
@@ -1121,3 +1439,101 @@ def book_overview(owner_id: int) -> list[dict]:
     for item in agg.values():
         item["net_micro"] = int(item["inflow_micro"]) - int(item["outflow_micro"])
     return [agg[k] for k in sorted(agg)]
+
+
+def customer_profile_map(owner_id: int, peer_ids: list[int] | tuple[int, ...]) -> dict[int, dict]:
+    ensure_schema()
+    ids = sorted({int(x) for x in peer_ids if int(x) > 0})
+    if not ids:
+        return {}
+    marks = ",".join("?" for _ in ids)
+    conn = connect(APP_DB_PATH)
+    try:
+        rows = conn.execute(
+            f"SELECT peer_id,alias,pinned,updated_at FROM customer_bookkeeping_profile WHERE owner_id=? AND peer_id IN ({marks})",
+            (int(owner_id), *ids),
+        ).fetchall()
+    finally:
+        conn.close()
+    return {
+        int(r["peer_id"]): {
+            "peer_id": int(r["peer_id"]),
+            "alias": str(r["alias"] or ""),
+            "pinned": bool(int(r["pinned"] or 0)),
+            "updated_at": int(r["updated_at"] or 0),
+        }
+        for r in rows
+    }
+
+
+def set_customer_profile(owner_id: int, peer_id: int, *, alias: str | None = None, pinned: bool | None = None) -> dict:
+    from customers import customer_detail
+
+    ensure_schema()
+    oid, pid = int(owner_id), int(peer_id)
+    if not customer_detail(oid, pid):
+        raise ValueError("客户不存在")
+    old = customer_profile_map(oid, [pid]).get(pid, {})
+    clean_alias = str(old.get("alias") or "") if alias is None else str(alias or "").strip()[:60]
+    pin_value = bool(old.get("pinned")) if pinned is None else bool(pinned)
+    now = int(time.time())
+    with tx(APP_DB_PATH, immediate=True) as conn:
+        conn.execute(
+            """INSERT INTO customer_bookkeeping_profile(owner_id,peer_id,alias,pinned,updated_at)
+               VALUES(?,?,?,?,?)
+               ON CONFLICT(owner_id,peer_id) DO UPDATE SET
+                 alias=excluded.alias,pinned=excluded.pinned,updated_at=excluded.updated_at""",
+            (oid, pid, clean_alias, 1 if pin_value else 0, now),
+        )
+    log_customer_event(
+        oid,
+        pid,
+        "customer_profile_updated",
+        {"alias": clean_alias, "pinned": pin_value},
+    )
+    return {"peer_id": pid, "alias": clean_alias, "pinned": pin_value, "updated_at": now}
+
+
+def current_goal(owner_id: int, *, now_ts: int | None = None) -> dict:
+    from receivables import report_summary
+
+    ensure_schema()
+    now = int(time.time() if now_ts is None else now_ts)
+    key = time.strftime("%Y-%m", time.localtime(now))
+    conn = connect(APP_DB_PATH)
+    try:
+        row = conn.execute(
+            "SELECT target_micro,updated_at FROM bookkeeping_goals WHERE owner_id=? AND period_key=?",
+            (int(owner_id), key),
+        ).fetchone()
+    finally:
+        conn.close()
+    target = int(row["target_micro"] or 0) if row else 0
+    month = report_summary(int(owner_id), "month", now)
+    current = int(month.get("inflow_micro") or 0)
+    return {
+        "period_key": key,
+        "target_micro": target,
+        "current_micro": current,
+        "progress_percent": min(999.0, round((current / target * 100.0), 1)) if target > 0 else 0.0,
+        "updated_at": int(row["updated_at"] or 0) if row else 0,
+        "currency": str(month.get("currency") or ""),
+    }
+
+
+def set_goal(owner_id: int, target_micro: int, *, now_ts: int | None = None) -> dict:
+    ensure_schema()
+    target = max(0, int(target_micro or 0))
+    if target > 10**18:
+        raise ValueError("目标金额过大")
+    now = int(time.time() if now_ts is None else now_ts)
+    key = time.strftime("%Y-%m", time.localtime(now))
+    with tx(APP_DB_PATH, immediate=True) as conn:
+        conn.execute(
+            """INSERT INTO bookkeeping_goals(owner_id,period_key,target_micro,updated_at)
+               VALUES(?,?,?,?)
+               ON CONFLICT(owner_id,period_key) DO UPDATE SET
+                 target_micro=excluded.target_micro,updated_at=excluded.updated_at""",
+            (int(owner_id), key, target, int(time.time())),
+        )
+    return current_goal(int(owner_id), now_ts=now)
