@@ -9,11 +9,13 @@
 
 ## 快速启动
 
-安装依赖：
+安装依赖（推荐使用带 SHA256 hash 的锁文件）：
 
 ```bash
-python3 -m pip install -r requirements.txt
+python3 -m pip install --require-hashes -r requirements.lock
 ```
+
+`requirements.txt` 保留为依赖范围输入；`requirements.lock` 是可复现部署基线。
 
 创建本地配置：
 
@@ -140,6 +142,14 @@ TRON / USDT、TON、汇率和基础币价查询仍然直接使用公开上游；
 - 生产版：PostgreSQL + 细粒度并发锁 + 私有 MoQing runtime/部署接线
 
 公开版**不需要私有 runtime entitlement 才能启动**。
+
+## 安全工程
+
+- 会计真值以 `ledger` 为准；冲正关系由 `reversal_of / reversed_by` 和数据库唯一约束保证。
+- APP_DB 的项目账 metadata / timeline 通过 ledger 同事务 outbox 投影；投影失败不会把“已成功记账”伪装成接口失败，后续会幂等补投影。
+- MiniApp 按 owner 做应用层限流：读取 120/min、普通写入 60/min、财务写入 30/min、批量类接口 10/min；超限返回 HTTP 429 + `Retry-After`。
+- SQLite 会尝试收紧到 `0600`。公开自部署默认告警；设置 `SHUIBEI_STRICT_DB_PERMISSIONS=1` 后权限加固失败会直接拒绝继续运行。
+- 依赖部署使用 `requirements.lock` + SHA256 hashes。
 
 ## 测试
 
