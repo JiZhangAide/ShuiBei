@@ -1,0 +1,99 @@
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
+
+from test_receivables_r31 import reset_local_dbs
+import config
+import db
+import ledger
+import receivables
+import advanced_ledger
+
+
+def setup_function():
+    reset_local_dbs()
+    advanced_ledger._SCHEMA_GENERATION = -1
+    advanced_ledger.ensure_schema()
+
+
+def _seed(owner=91001, peer=92001):
+    return ledger.add_record(
+        owner, peer, "SecurityTest", "出", 100000, -100000, "original",
+        category="服务", cost_micro=40000,
+    )
+
+
+def test_reversed_status_cannot_be_set_by_generic_metadata():
+    owner, peer = 91001, 92001
+    lid = _seed(owner, peer)
+    with pytest.raises(ValueError, match="只能由冲正流程"):
+        advanced_ledger.set_entry_meta(owner, lid, status="reversed")
+    report = receivables.report_range_summary(owner, int(time.time()) - 60, int(time.time()) + 60)
+    assert report["outflow_micro"] == 100000
+    assert report["gross_profit_micro"] == 60000
+    assert ledger.get_balance(owner, peer) == -100000
+
+
+def test_metadata_projection_cannot_hide_accounting_fact():
+    owner, peer = 91002, 92002
+    lid = _seed(owner, peer)
+    advanced_ledger.set_entry_meta(owner, lid, status="reversed", _internal=True)
+    report = receivables.report_range_summary(owner, int(time.time()) - 60, int(time.time()) + 60)
+    assert report["outflow_micro"] == 100000
+    assert report["classified_sales_micro"] == 100000
+    assert report["record_count"] == 1
+    assert ledger.get_balance(owner, peer) == -100000
+
+
+def test_concurrent_reverse_changes_balance_exactly_once():
+    owner, peer = 91003, 92003
+    lid = _seed(owner, peer)
+
+    def go(i):
+        try:
+            return ("ok", advanced_ledger.reverse_entry(owner, lid, remark=f"race-{i}"))
+        except ValueError as exc:
+            return ("err", str(exc))
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        rows = list(ex.map(go, (1, 2)))
+
+    assert sum(1 for row in rows if row[0] == "ok") == 1
+    assert sum(1 for row in rows if row[0] == "err") == 1
+    assert ledger.get_balance(owner, peer) == 0
+
+    conn = db.connect(config.LEDGER_DB_PATH)
+    try:
+        rel = conn.execute(
+            "SELECT id,reversal_of,reversed_by FROM ledger WHERE owner_id=? ORDER BY id",
+            (owner,),
+        ).fetchall()
+    finally:
+        conn.close()
+    assert len(rel) == 2
+    original, reversal = rel
+    assert int(original["reversed_by"] or 0) == int(reversal["id"])
+    assert int(reversal["reversal_of"] or 0) == int(original["id"])
+
+
+def test_database_unique_constraint_allows_only_one_reversal():
+    owner, peer = 91004, 92004
+    lid = _seed(owner, peer)
+    advanced_ledger.reverse_entry(owner, lid)
+
+    conn = db.connect(config.LEDGER_DB_PATH)
+    try:
+        with pytest.raises(Exception):
+            conn.execute(
+                """INSERT INTO ledger(
+                       owner_id,peer_id,user_name,action,amount_micro,balance_micro,remark,time,
+                       category,cost_micro,reversal_of,reversed_by
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,0)""",
+                (
+                    owner, peer, "SecurityTest", "入", 100000, 100000, "duplicate",
+                    time.strftime("%Y-%m-%d %H:%M:%S"), "", 0, lid,
+                ),
+            )
+    finally:
+        conn.close()
