@@ -7,6 +7,16 @@
 
 水杯记账属于墨清体系。本仓库提供 **source-available 公开审计与自部署版本**：核心记账业务代码、SQLite 数据层、Telegram Bot、MiniApp 前后端和公开 Developer API 客户端都可直接运行；生产凭据、生产 PostgreSQL 接线、私有 MoQing runtime、部署拓扑与私有支付接线不随仓库分发。
 
+## 墨清记账官方服务与免费中文 Business 记账
+
+如果你需要**直接使用**而不是自行部署 ShuiBei，可访问同一产品生态的正式服务 **[墨清记账 JiZhangAide](https://www.jizhang.org/)**：
+
+- **[免费中文 Telegram Business 记账使用指南](https://www.jizhang.org/telegram-accounting-bot/)**：介绍 Business 连接方式、授权范围，以及群组、私聊与 Business 独立账本。
+- **[官方 Telegram 机器人 @JiZhangAide_bot](https://t.me/JiZhangAide_bot)**：中文快捷记账，例如 `+100 客户尾款` / `-35 服务费`，支持查询、撤销与导出。
+- **[Free / Plus / Pro 套餐](https://www.jizhang.org/plans/)**：官方 Free 核心记账为 0U，部分自动化、监控容量及高级功能受套餐限制。
+
+**区分两种产品：** 本仓库是可审计、可按许可自行部署的 ShuiBei 公开版本，并非线上 JiZhangAide 主机器人全部源码；官网所述在线服务能力不表示每项都包含在本仓库中。官方服务的 Business 授权不等于要求提供个人 Telegram Session。
+
 ## 快速启动
 
 安装依赖（推荐使用带 SHA256 hash 的锁文件）：
